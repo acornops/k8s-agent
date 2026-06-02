@@ -1,0 +1,16 @@
+apiVersion: v2
+name: acornops-k8s-agent
+description: AcornOps Kubernetes agent for outbound cluster telemetry and tool execution.
+type: application
+version: 0.0.1-experimental.1
+appVersion: "0.0.1-experimental.1"
+home: https://github.com/acornops/k8s-agent
+sources:
+  - https://github.com/acornops/k8s-agent
+keywords:
+  - acornops
+  - kubernetes
+  - aiops
+  - agent
+maintainers:
+  - name: AcornOps

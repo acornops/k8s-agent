@@ -1,0 +1,207 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, feature/* ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_full: ${{ steps.filter.outputs.run_full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        name: Detect docs-only changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]] && git rev-parse --verify HEAD^1 >/dev/null 2>&1 && git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+            files="$(git diff --name-only HEAD^1 HEAD^2)"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [[ "${base}" =~ ^0+$ ]]; then
+              base="$(git rev-list --max-parents=0 "${head}")"
+            fi
+
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+              echo "run_full=true" >> "${GITHUB_OUTPUT}"
+              echo "Unable to resolve diff range; running full CI."
+              exit 0
+            fi
+
+            files="$(git diff --name-only "${base}" "${head}")"
+          fi
+          if [[ -z "${files}" ]]; then
+            run_full=true
+          else
+            docs_only=true
+            while IFS= read -r file; do
+              [[ -z "${file}" ]] && continue
+              case "${file}" in
+                *.md|*.mdx|docs/**|README|README.*|CHANGELOG|CHANGELOG.*|CONTRIBUTING|CONTRIBUTING.*|LICENSE|LICENSE.*)
+                  ;;
+                *)
+                  docs_only=false
+                  ;;
+              esac
+            done <<< "${files}"
+
+            if [[ "${docs_only}" == "true" ]]; then
+              run_full=false
+            else
+              run_full=true
+            fi
+          fi
+
+          echo "run_full=${run_full}" >> "${GITHUB_OUTPUT}"
+          echo "run_full=${run_full}"
+
+  docs-only:
+    needs: changes
+    if: needs.changes.outputs.run_full != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip expensive CI
+        run: echo "Only Markdown/docs files changed; expensive CI jobs skipped."
+
+  validate:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+      - name: Run Validate
+        run: npm run validate:ci
+
+  helm-chart:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint Helm chart
+        run: helm lint charts/acornops-k8s-agent --set-string config.platformUrl=https://api.acornops.dev --set-string config.clusterId=cluster-1 --set-string config.agentKey=test-key
+      - name: Check Helm templates
+        run: node scripts/check-helm-chart.mjs
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: [changes, validate]
+    if: needs.changes.outputs.run_full == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run coverage
+        run: npm run test:coverage
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-agent-coverage
+          path: coverage
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/lcov.info
+          flags: k8s-agent
+          fail_ci_if_error: false
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+    needs: [changes, unit-tests]
+    if: needs.changes.outputs.run_full == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Install k3d
+        run: wget -qO - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+      - name: Create k3d cluster
+        run: k3d cluster create test-cluster --no-lb --wait
+      - name: Run E2E Tests
+        run: npm run test:e2e
+        env:
+          ACORNOPS_CLUSTER_ID: "cluster-ci"
+          ACORNOPS_AGENT_PLATFORM_URL: "ws://localhost:8080"
+          ACORNOPS_AGENT_KEY: "test-key"
+
+  helm-smoke:
+    runs-on: ubuntu-latest
+    needs: [changes, helm-chart]
+    if: needs.changes.outputs.run_full == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+      - name: Install k3d
+        run: wget -qO - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+      - name: Create k3d cluster
+        run: k3d cluster create chart-smoke --no-lb --wait
+      - name: Build local agent image
+        run: docker build -t ghcr.io/acornops/k8s-agent:ci .
+      - name: Load local agent image
+        run: k3d image import ghcr.io/acornops/k8s-agent:ci -c chart-smoke
+      - name: Install chart
+        run: |
+          helm upgrade --install acornops-agent charts/acornops-k8s-agent \
+            --namespace acornops --create-namespace \
+            --set-string image.tag=ci \
+            --set image.pullPolicy=IfNotPresent \
+            --set-string config.websocketUrl=wss://mock-platform.invalid/agent \
+            --set-string config.clusterId=cluster-smoke \
+            --set-string config.agentKey=test-key
+      - name: Verify rollout
+        run: kubectl -n acornops rollout status deployment/acornops-agent --timeout=90s
+      - name: Verify read-only RBAC
+        run: |
+          kubectl auth can-i list pods --as=system:serviceaccount:acornops:acornops-agent
+          if kubectl auth can-i patch deployments --as=system:serviceaccount:acornops:acornops-agent; then
+            echo "default chart unexpectedly allows deployment patch"
+            exit 1
+          fi
+      - name: Show agent logs
+        if: always()
+        run: kubectl -n acornops logs deployment/acornops-agent --tail=100 || true

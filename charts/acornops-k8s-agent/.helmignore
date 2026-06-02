@@ -1,0 +1,9 @@
+.git/
+.github/
+.DS_Store
+node_modules/
+dist/
+coverage/
+local-snapshots/
+*.log
+*.tgz

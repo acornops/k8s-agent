@@ -1,0 +1,67 @@
+# Legacy/manual manifest. Prefer the Helm chart in charts/acornops-k8s-agent for release installs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: acornops-k8s-agent
+  namespace: acornops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: acornops-k8s-agent-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: acornops-k8s-agent-binding
+subjects:
+  - kind: ServiceAccount
+    name: acornops-k8s-agent
+    namespace: acornops
+roleRef:
+  kind: ClusterRole
+  name: acornops-k8s-agent-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: acornops-k8s-agent-leader-election
+  namespace: acornops
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "patch", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: acornops-k8s-agent-leader-election
+  namespace: acornops
+subjects:
+  - kind: ServiceAccount
+    name: acornops-k8s-agent
+    namespace: acornops
+roleRef:
+  kind: Role
+  name: acornops-k8s-agent-leader-election
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+node_modules
+dist
+coverage
+local-snapshots
+.env
+.env.*
+*.log
+.DS_Store
+docker-compose*.yml
+docs/generated
+__pycache__/
+*.py[cod]

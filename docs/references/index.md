@@ -1,0 +1,8 @@
+# K8s Agent References
+
+Use these references as supporting material. The source of truth remains repository-local code and docs.
+
+- [Contracts](/docs/contracts/README.md)
+- [Architecture](/ARCHITECTURE.md)
+- [Generated Artifacts](/docs/generated/README.md)
+- External Kubernetes API or JSON-RPC details should be summarized into repo-local docs before they become important operating knowledge.

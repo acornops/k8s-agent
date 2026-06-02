@@ -1,0 +1,73 @@
+# Legacy/manual manifest. Prefer the Helm chart in charts/acornops-k8s-agent for release installs.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: acornops
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acornops-k8s-agent
+  namespace: acornops
+  labels:
+    app: acornops-k8s-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: acornops-k8s-agent
+  template:
+    metadata:
+      labels:
+        app: acornops-k8s-agent
+    spec:
+      serviceAccountName: acornops-k8s-agent
+      containers:
+        - name: agent
+          image: acornops/agent:local
+          imagePullPolicy: Never
+          env:
+            - name: ACORNOPS_AGENT_PLATFORM_URL
+              value: "wss://api.acornops.dev/api/v1/agent/connect"
+            - name: ACORNOPS_CLUSTER_ID
+              value: "YOUR_CLUSTER_ID"
+            - name: ACORNOPS_AGENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: acornops-k8s-agent-secret
+                  key: agent-key
+            - name: ACORNOPS_AGENT_WRITE_ENABLED
+              value: "false"
+            - name: ACORNOPS_AGENT_LOG_LEVEL
+              value: "info"
+            - name: ACORNOPS_AGENT_LEADER_ELECTION_ENABLED
+              value: "false"
+            - name: ACORNOPS_AGENT_LEASE_NAME
+              value: "acornops-agent-leader"
+            - name: ACORNOPS_AGENT_LEASE_NAMESPACE
+              value: ""
+            - name: ACORNOPS_AGENT_LEASE_DURATION_MS
+              value: "15000"
+            - name: ACORNOPS_AGENT_RENEW_DEADLINE_MS
+              value: "10000"
+            - name: ACORNOPS_AGENT_RETRY_PERIOD_MS
+              value: "2000"
+            - name: ACORNOPS_AGENT_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ACORNOPS_AGENT_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: ACORNOPS_AGENT_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi

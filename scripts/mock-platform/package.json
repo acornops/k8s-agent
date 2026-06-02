@@ -1,0 +1,10 @@
+{
+  "name": "acornops-mock-platform",
+  "version": "0.0.1-experimental.1",
+  "type": "module",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}

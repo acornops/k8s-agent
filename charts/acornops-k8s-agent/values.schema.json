@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "platformUrl": { "type": "string" },
+        "websocketUrl": { "type": "string" },
+        "clusterId": { "type": "string" },
+        "agentKey": { "type": "string" },
+        "watchNamespaces": { "type": "string" },
+        "logLevel": {
+          "type": "string",
+          "enum": ["info", "debug", "error", "trace", "warn"]
+        },
+        "handshakeProbeTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "k8sConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "k8sListPageLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "localFallbackEnabled": { "type": "boolean" }
+      }
+    },
+    "leaderElection": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "leaseName": { "type": "string", "minLength": 1 },
+        "leaseNamespace": { "type": "string" },
+        "leaseDurationMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "renewDeadlineMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "retryPeriodMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "existingSecret": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "key": { "type": "string", "minLength": 1 }
+      }
+    },
+    "namespaceScope": {
+      "type": "object",
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "scope": {
+          "type": "string",
+          "enum": ["cluster", "namespace"]
+        },
+        "namespaces": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "write": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "topologySpreadConstraints": {
+      "type": "array"
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "string", "minLength": 1 }
+          ]
+        }
+      }
+    }
+  }
+}

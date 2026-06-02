@@ -1,0 +1,14 @@
+AcornOps agent has been installed.
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Image: {{ include "acornops-agent.image" . }}
+Platform WebSocket: {{ include "acornops-agent.websocketUrl" . }}
+RBAC scope: {{ .Values.rbac.scope }}
+Write tools enabled: {{ .Values.rbac.write.enabled }}
+
+Check rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "acornops-agent.fullname" . }}
+
+View logs:
+  kubectl -n {{ .Release.Namespace }} logs -f deployment/{{ include "acornops-agent.fullname" . }}
