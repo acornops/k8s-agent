@@ -71,6 +71,11 @@ assertMatch(readOnly, /name: ACORNOPS_AGENT_K8S_LIST_PAGE_LIMIT\s+value: "500"/,
 assertIncludes(readOnly, 'fieldPath: metadata.uid', 'deployment should inject pod UID for leader identity');
 assertExcludes(readOnly, 'verbs: ["patch", "update"]', 'default RBAC must not include write verbs');
 assertExcludes(readOnly, 'resources: ["leases"]', 'default install should not grant Lease RBAC');
+assertIncludes(
+  readOnly,
+  'resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "nodes", "namespaces"]',
+  'cluster RBAC should allow namespace discovery'
+);
 assertIncludes(readOnly, 'kind: Secret', 'default install should create the agent key Secret');
 
 const writeEnabled = helmTemplate([...baseArgs, '--set', 'rbac.write.enabled=true']);
@@ -102,6 +107,7 @@ assertIncludes(namespaceScoped, 'kind: Role', 'namespace-scoped install should c
 assertIncludes(namespaceScoped, 'namespace: team-a', 'namespace-scoped install should include team-a Role/Binding');
 assertIncludes(namespaceScoped, 'namespace: team-b', 'namespace-scoped install should include team-b Role/Binding');
 assertExcludes(namespaceScoped, 'kind: ClusterRole', 'namespace-scoped install should avoid ClusterRole');
+assertExcludes(namespaceScoped, 'resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "nodes", "namespaces"]', 'namespace-scoped install should not grant cluster namespace discovery');
 assertIncludes(namespaceScoped, 'value: "team-a,team-b"', 'namespace include should set ACORNOPS_AGENT_WATCH_NAMESPACES');
 
 const explicitWebsocket = helmTemplate([

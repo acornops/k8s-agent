@@ -38,7 +38,7 @@ metadata:
     {{- include "acornops-agent.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "nodes"]
+    resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "nodes", "namespaces"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]

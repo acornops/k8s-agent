@@ -289,7 +289,7 @@ describe('listResourcesTool', () => {
       items: [
         {
           metadata: { name: 'worker-a', uid: 'node-uid' },
-          status: { phase: 'Ready' },
+          status: { conditions: [{ type: 'Ready', status: 'True' }] },
         },
       ],
     } as never);

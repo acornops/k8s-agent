@@ -76,7 +76,7 @@ function summarizeResource(kind: string, item: any): Record<string, unknown> {
   if (kind === 'Node') {
     return {
       ...base,
-      phase: item?.status?.phase || 'Unknown'
+      phase: summarizeNodePhase(item)
     };
   }
 
@@ -90,6 +90,25 @@ function summarizeResource(kind: string, item: any): Record<string, unknown> {
   }
 
   return base;
+}
+
+/** Derive the human-readable node phase from Kubernetes readiness conditions. */
+function summarizeNodePhase(item: any): string {
+  if (item?.status?.phase) {
+    return item.status.phase;
+  }
+
+  const conditions = Array.isArray(item?.status?.conditions) ? item.status.conditions : [];
+  const readyCondition = conditions.find((condition: any) => condition?.type === 'Ready');
+
+  if (readyCondition?.status === 'True') {
+    return 'Ready';
+  }
+  if (readyCondition?.status === 'False') {
+    return 'NotReady';
+  }
+
+  return 'Unknown';
 }
 
 /** Handle a request to list Kubernetes resources by kind. */

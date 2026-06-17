@@ -117,4 +117,6 @@ helm uninstall acornops-agent --namespace acornops
 kubectl -n acornops rollout status deployment/acornops-agent
 kubectl -n acornops logs -f deployment/acornops-agent
 kubectl auth can-i list pods --as=system:serviceaccount:acornops:acornops-agent
+kubectl auth can-i list namespaces --as=system:serviceaccount:acornops:acornops-agent
+kubectl auth can-i list nodes --as=system:serviceaccount:acornops:acornops-agent
 ```

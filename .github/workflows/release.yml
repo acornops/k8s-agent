@@ -97,6 +97,8 @@ jobs:
       - name: Verify read-only RBAC
         run: |
           kubectl auth can-i list pods --as=system:serviceaccount:acornops:acornops-agent
+          kubectl auth can-i list nodes --as=system:serviceaccount:acornops:acornops-agent
+          kubectl auth can-i list namespaces --as=system:serviceaccount:acornops:acornops-agent
           if kubectl auth can-i patch deployments --as=system:serviceaccount:acornops:acornops-agent; then
             echo "default chart unexpectedly allows deployment patch"
             exit 1
