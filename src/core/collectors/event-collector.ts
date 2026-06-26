@@ -48,11 +48,15 @@ export class EventCollector implements Collector {
               kind: e.involvedObject?.kind,
               name: e.involvedObject?.name,
               namespace: e.involvedObject?.namespace,
+              uid: e.involvedObject?.uid,
           },
           reason: e.reason,
           message: e.message,
           type: e.type,
+          count: e.count,
+          firstTimestamp: e.firstTimestamp,
           lastTimestamp: e.lastTimestamp || e.eventTime || e.metadata?.creationTimestamp,
+          reportingComponent: e.reportingComponent || e.source?.component,
       }));
     } catch (err) {
       logger.warn({ err }, 'Failed to collect warning events');

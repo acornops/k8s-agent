@@ -48,9 +48,15 @@ describe('ResourceCollector', () => {
   it('should collect trimmed resources and nodes', async () => {
     const mockPods = {
       items: [{
-        metadata: { name: 'pod1', namespace: 'default', uid: 'uid1' },
+        metadata: {
+          name: 'pod1',
+          namespace: 'default',
+          uid: 'uid1',
+          labels: { app: 'api' },
+          ownerReferences: [{ apiVersion: 'apps/v1', kind: 'ReplicaSet', name: 'api-7d9', uid: 'rs1', controller: true }]
+        },
         spec: { nodeName: 'node1' },
-        status: { phase: 'Running', containerStatuses: [{ name: 'c1', ready: true, restartCount: 0, state: { running: {} } }] }
+        status: { phase: 'Running', containerStatuses: [{ name: 'c1', ready: true, restartCount: 0, state: { running: {} }, lastState: { terminated: { reason: 'Completed' } } }] }
       }]
     };
     const mockDeps = {
@@ -178,11 +184,13 @@ describe('ResourceCollector', () => {
       name: 'pod1',
       namespace: 'default',
       uid: 'uid1',
+      labels: { app: 'api' },
+      ownerReferences: [{ apiVersion: 'apps/v1', kind: 'ReplicaSet', name: 'api-7d9', uid: 'rs1', controller: true, blockOwnerDeletion: undefined }],
       creationTimestamp: undefined,
       phase: 'Running',
       nodeName: 'node1',
       restartCount: 0,
-      containerStatuses: [{ name: 'c1', ready: true, restartCount: 0, state: { running: {} } }]
+      containerStatuses: [{ name: 'c1', ready: true, restartCount: 0, state: { running: {} }, lastState: { terminated: { reason: 'Completed' } } }]
     });
 
     expect(result.deployments[0]).toEqual({

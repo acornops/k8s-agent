@@ -142,6 +142,15 @@ export class ResourceCollector implements Collector {
       name: p.metadata?.name,
       namespace: p.metadata?.namespace,
       uid: p.metadata?.uid,
+      labels: p.metadata?.labels,
+      ownerReferences: p.metadata?.ownerReferences?.map((owner: any) => ({
+        apiVersion: owner.apiVersion,
+        kind: owner.kind,
+        name: owner.name,
+        uid: owner.uid,
+        controller: owner.controller,
+        blockOwnerDeletion: owner.blockOwnerDeletion,
+      })),
       creationTimestamp: p.metadata?.creationTimestamp,
       phase: p.status?.phase,
       nodeName: p.spec?.nodeName,
@@ -151,6 +160,7 @@ export class ResourceCollector implements Collector {
         ready: cs.ready,
         restartCount: cs.restartCount,
         state: cs.state,
+        lastState: cs.lastState,
       })),
     }));
   }

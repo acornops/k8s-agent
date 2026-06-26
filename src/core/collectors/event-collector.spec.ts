@@ -23,11 +23,14 @@ describe('EventCollector', () => {
     const mockEvents = {
       items: [
         {
-          involvedObject: { kind: 'Pod', name: 'pod1', namespace: 'default' },
+          involvedObject: { kind: 'Pod', name: 'pod1', namespace: 'default', uid: 'pod-uid-1' },
           reason: 'BackOff',
           message: 'Back-off restarting failed container',
           type: 'Warning',
+          count: 3,
+          firstTimestamp: new Date(now - 30000).toISOString(),
           lastTimestamp: new Date(now - 10000).toISOString(),
+          reportingComponent: 'kubelet',
           metadata: { name: 'event1', uid: 'uid1' }
         },
         {
@@ -51,11 +54,15 @@ describe('EventCollector', () => {
         kind: 'Pod',
         name: 'pod1',
         namespace: 'default',
+        uid: 'pod-uid-1',
       },
       reason: 'BackOff',
       message: 'Back-off restarting failed container',
       type: 'Warning',
+      count: 3,
+      firstTimestamp: expect.any(String),
       lastTimestamp: expect.any(String),
+      reportingComponent: 'kubelet',
     });
     expect(result[0].metadata).toBeUndefined();
   });
