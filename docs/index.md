@@ -16,7 +16,6 @@ This `docs/` tree is the repository-local system of record for agent-readable de
 
 - [Design Index](/docs/design-docs/index.md)
 - [Core Beliefs](/docs/design-docs/core-beliefs.md)
-- [Leader Election For Active-Passive High Availability](/docs/design-docs/leader-election.md)
 
 ## Product Specs
 
