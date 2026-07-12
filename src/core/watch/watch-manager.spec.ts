@@ -106,6 +106,16 @@ describe('WatchManager', () => {
     expect(trigger).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves the cluster-wide Node watch when namespace policy is bounded', async () => {
+    setNamespaceScope({ include: ['default'], exclude: [] });
+    const store = new WatchStore();
+    const watchClient = createWatchClient();
+    new WatchManager(store, vi.fn(), watchClient as never).start();
+
+    await vi.waitFor(() => expect(watchCalls.some((call) => call.path === '/api/v1/nodes')).toBe(true));
+    expect(k8sClient.core.listNode).toHaveBeenCalled();
+  });
+
   it('does not trigger snapshots for bookmark events', async () => {
     const store = new WatchStore();
     const trigger = vi.fn();

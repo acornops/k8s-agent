@@ -64,6 +64,22 @@ spec:
               value: {{ .Values.config.k8sConcurrency | quote }}
             - name: ACORNOPS_AGENT_K8S_LIST_PAGE_LIMIT
               value: {{ .Values.config.k8sListPageLimit | quote }}
+            - name: ACORNOPS_AGENT_TOOL_READ_CONCURRENCY
+              value: {{ .Values.config.toolReadConcurrency | quote }}
+            - name: ACORNOPS_AGENT_TOOL_WRITE_CONCURRENCY
+              value: {{ .Values.config.toolWriteConcurrency | quote }}
+            - name: ACORNOPS_AGENT_TOOL_QUEUE_LIMIT
+              value: {{ .Values.config.toolQueueLimit | quote }}
+            - name: ACORNOPS_AGENT_TOOL_MAX_INPUT_BYTES
+              value: {{ .Values.config.toolMaxInputBytes | quote }}
+            - name: ACORNOPS_AGENT_TOOL_MAX_OUTPUT_BYTES
+              value: {{ .Values.config.toolMaxOutputBytes | quote }}
+            - name: ACORNOPS_AGENT_SCALE_MAX_REPLICAS
+              value: {{ .Values.config.scaleMaxReplicas | quote }}
+            - name: ACORNOPS_AGENT_ALLOW_SCALE_TO_ZERO
+              value: {{ .Values.config.allowScaleToZero | quote }}
+            - name: ACORNOPS_AGENT_RBAC_SCOPE
+              value: {{ .Values.rbac.scope | quote }}
             - name: ACORNOPS_AGENT_WATCH_CACHE_ENABLED
               value: {{ .Values.config.watchCacheEnabled | quote }}
             - name: ACORNOPS_AGENT_WATCH_SNAPSHOT_DEBOUNCE_MS
@@ -98,13 +114,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            {{- if .Values.config.watchNamespaces }}
+            {{- if eq .Values.rbac.scope "namespace" }}
             - name: ACORNOPS_AGENT_WATCH_NAMESPACES
-              value: {{ .Values.config.watchNamespaces | quote }}
+              value: {{ join "," (include "acornops-agent.rbacNamespaces" . | fromYamlArray) | quote }}
             {{- else if .Values.namespaceScope.include }}
             - name: ACORNOPS_AGENT_WATCH_NAMESPACES
               value: {{ join "," .Values.namespaceScope.include | quote }}
+            {{- else if .Values.config.watchNamespaces }}
+            - name: ACORNOPS_AGENT_WATCH_NAMESPACES
+              value: {{ .Values.config.watchNamespaces | quote }}
             {{- end }}
+            - name: ACORNOPS_AGENT_EXCLUDE_NAMESPACES
+              value: {{ join "," .Values.namespaceScope.exclude | quote }}
             - name: AGENT_VERSION
               value: {{ .Chart.AppVersion | quote }}
           resources:

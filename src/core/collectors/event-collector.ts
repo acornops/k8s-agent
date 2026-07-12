@@ -54,7 +54,10 @@ export class EventCollector implements Collector {
       }
 
       // Filter events newer than 'since' - k8s doesn't support time filtering in fieldSelector easily for all resources
-      return events.filter(e => isEventWithinAge(e, this.recentEventAgeMs)).map(mapWarningEvent);
+      return filterNamespaceItems(
+        events,
+        (event) => event.metadata?.namespace || event.involvedObject?.namespace
+      ).filter(e => isEventWithinAge(e, this.recentEventAgeMs)).map(mapWarningEvent);
     } catch (err) {
       logger.warn({ err }, 'Failed to collect warning events');
       return [];

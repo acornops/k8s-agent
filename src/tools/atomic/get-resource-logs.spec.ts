@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getResourceLogsTool, readPodLogsText } from './get-resource-logs.js';
 import { k8sClient } from '../../k8s/client.js';
-import fetch, { Headers } from 'node-fetch';
+import fetch, { Headers, Response } from 'node-fetch';
 
 vi.mock('node-fetch', async () => {
   const actual = await vi.importActual<typeof import('node-fetch')>('node-fetch');
@@ -29,11 +29,7 @@ describe('Get Resource Logs Tool', () => {
     vi.mocked(k8sClient.kc.applyToFetchOptions).mockResolvedValue({
       headers: { authorization: 'Bearer test-token' }
     } as never);
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => 'pod log text'
-    } as never);
+    vi.mocked(fetch).mockResolvedValue(new Response('pod log text', { status: 200 }));
   });
 
   afterEach(() => {
@@ -68,11 +64,7 @@ describe('Get Resource Logs Tool', () => {
   });
 
   it('returns the body even when Kubernetes omits a content-type header', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      text: async () => 'plain text without a content-type'
-    } as never);
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('plain text without a content-type', { status: 200 }));
 
     await expect(
       readPodLogsText('pod name', 'default', {
@@ -83,12 +75,8 @@ describe('Get Resource Logs Tool', () => {
     ).resolves.toBe('plain text without a content-type');
   });
 
-  it('surfaces Kubernetes error text when log retrieval fails', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      text: async () => 'pods "missing" not found'
-    } as never);
+  it('does not surface Kubernetes error bodies when log retrieval fails', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('pods "missing" not found', { status: 404 }));
 
     await expect(
       readPodLogsText('missing', 'default', {
@@ -96,6 +84,16 @@ describe('Get Resource Logs Tool', () => {
         tail_lines: 100,
         limit_bytes: 1024
       })
-    ).rejects.toThrow('pods "missing" not found');
+    ).rejects.toThrow('Kubernetes pod log request failed with status 404');
+  });
+
+  it('rejects an upstream log body larger than the hard output limit', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('x'.repeat(1024 * 1024 + 1), { status: 200 }));
+
+    await expect(readPodLogsText('api', 'default', {
+      previous: false,
+      tail_lines: 100,
+      limit_bytes: 1024 * 1024,
+    })).rejects.toMatchObject({ toolCode: 'OUTPUT_TOO_LARGE' });
   });
 });

@@ -36,6 +36,7 @@ export class WebSocketClient extends EventEmitter {
 
     logger.info({ url: this.url }, 'Connecting to platform...');
     const socket = new WebSocket(this.url, {
+      maxPayload: config.ACORNOPS_AGENT_TOOL_MAX_INPUT_BYTES,
       headers: {
         'x-agent-key': config.ACORNOPS_AGENT_KEY,
         'x-agent-version': config.AGENT_VERSION,

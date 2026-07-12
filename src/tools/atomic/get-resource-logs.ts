@@ -1,18 +1,43 @@
 import { z } from 'zod';
-import fetch, { Headers } from 'node-fetch';
+import fetch, { Headers, Response } from 'node-fetch';
 import { k8sClient } from '../../k8s/client.js';
-import { ToolDefinition } from '../registry.js';
+import { ToolDefinition, ToolExecutionContext } from '../registry.js';
 import { checkNamespaceAllowed } from '../utils.js';
+import { containerNameSchema, kubernetesNameSchema, namespaceSchema } from '../schemas.js';
+import { ToolExecutionError } from '../errors.js';
+
+const MAX_LOG_BYTES = 1024 * 1024;
 
 const schema = z.object({
-  name: z.string(),
-  namespace: z.string(),
-  container: z.string().optional(),
+  name: kubernetesNameSchema,
+  namespace: namespaceSchema,
+  container: containerNameSchema.optional(),
   previous: z.boolean().optional().default(false),
   tail_lines: z.number().int().min(1).max(5000).optional().default(200),
   since_seconds: z.number().int().min(1).optional(),
-  limit_bytes: z.number().int().min(1).max(10 * 1024 * 1024).optional().default(1024 * 1024)
-});
+  limit_bytes: z.number().int().min(1).max(MAX_LOG_BYTES).optional().default(MAX_LOG_BYTES)
+}).strict();
+
+/** Consume a response body without allowing an oversized upstream response into memory. */
+async function readBoundedBody(response: Response): Promise<string> {
+  if (Buffer.isBuffer(response.body)) {
+    if (response.body.length > MAX_LOG_BYTES) {
+      throw new ToolExecutionError('OUTPUT_TOO_LARGE', 'Pod log response exceeds the 1 MiB limit');
+    }
+    return response.body.toString('utf8');
+  }
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of response.body) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > MAX_LOG_BYTES) {
+      throw new ToolExecutionError('OUTPUT_TOO_LARGE', 'Pod log response exceeds the 1 MiB limit');
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, bytes).toString('utf8');
+}
 
 /** Build the Kubernetes pod logs API URL for a specific pod request. */
 function buildPodLogUrl(name: string, namespace: string, params: {
@@ -46,6 +71,7 @@ export async function readPodLogsText(name: string, namespace: string, params: {
   tail_lines: number;
   since_seconds?: number;
   limit_bytes: number;
+  signal?: AbortSignal;
 }): Promise<string> {
   const url = buildPodLogUrl(name, namespace, params);
   const requestInit = await k8sClient.kc.applyToFetchOptions({});
@@ -55,17 +81,18 @@ export async function readPodLogsText(name: string, namespace: string, params: {
   const response = await fetch(url.toString(), {
     ...requestInit,
     method: 'GET',
-    headers
+    headers,
+    signal: params.signal,
   });
-  const body = await response.text();
+  const body = await readBoundedBody(response);
   if (!response.ok) {
-    throw new Error(body.trim() || `Kubernetes pod log request failed with status ${response.status}`);
+    throw new Error(`Kubernetes pod log request failed with status ${response.status}`);
   }
   return body;
 }
 
 /** Handle the get_resource_logs tool request. */
-async function handler(params: z.infer<typeof schema>) {
+async function handler(params: z.infer<typeof schema>, context?: ToolExecutionContext) {
   const { name, namespace, container, previous, tail_lines, since_seconds, limit_bytes } = params;
   checkNamespaceAllowed(namespace);
 
@@ -74,7 +101,8 @@ async function handler(params: z.infer<typeof schema>) {
     previous,
     tail_lines,
     since_seconds,
-    limit_bytes
+    limit_bytes,
+    signal: context?.signal,
   });
 
   return {
@@ -92,5 +120,6 @@ export const getResourceLogsTool: ToolDefinition = {
   timeoutMs: 20000,
   version: 'v1',
   schema,
+  scopeResolver: (params) => ({ type: 'namespaced', namespace: params.namespace }),
   handler
 };

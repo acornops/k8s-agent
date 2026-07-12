@@ -35,8 +35,7 @@
         "get_resource_logs",
         "restart_workload",
         "scale_workload",
-        "simulate_patch",
-        "apply_remediation"
+        "simulate_patch"
       ],
       "snapshotFields": [
         "metrics.available",

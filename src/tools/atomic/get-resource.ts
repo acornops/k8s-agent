@@ -3,11 +3,16 @@ import { k8sClient } from '../../k8s/client.js';
 import { redactKubernetesResource } from '../resource-redaction.js';
 import { ToolDefinition } from '../registry.js';
 import { checkNamespaceAllowed } from '../utils.js';
+import { kubernetesNameSchema, namespaceSchema } from '../schemas.js';
 
 const schema = z.object({
   kind: z.enum(['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'Job', 'Service', 'Node', 'HPA', 'Event', 'Namespace']),
-  name: z.string(),
-  namespace: z.string().optional()
+  name: kubernetesNameSchema,
+  namespace: namespaceSchema.optional()
+}).strict().superRefine((value, ctx) => {
+  if (!['Node', 'Namespace'].includes(value.kind) && !value.namespace) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['namespace'], message: 'namespace is required for namespaced kinds' });
+  }
 });
 
 /** Handle a request to fetch one named Kubernetes resource. */
@@ -59,10 +64,15 @@ async function handler(params: z.infer<typeof schema>) {
 
 export const getResourceTool: ToolDefinition = {
   name: 'get_resource',
-  description: 'Fetch the full Kubernetes API object for a specific named resource.',
+  description: 'Fetch a redacted Kubernetes API object for a specific named resource.',
   capability: 'read',
   timeoutMs: 12000,
   version: 'v1',
   schema,
+  scopeResolver: (params) => params.kind === 'Node'
+    ? ({ type: 'cluster', kind: params.kind })
+    : params.kind === 'Namespace'
+      ? ({ type: 'cluster', kind: params.kind, namespace: params.name })
+      : ({ type: 'namespaced', namespace: params.namespace }),
   handler
 };

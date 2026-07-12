@@ -4,7 +4,7 @@ import { k8sClient } from '../../k8s/client.js';
 import { ListPageOptions, listAllPages } from '../../k8s/pagination.js';
 import { Collector } from '../../types/collector.js';
 import { config } from '../../config.js';
-import { filterNamespaceItems, getWatchNamespaces, isNamespaceAllowed } from '../../runtime/namespace-scope.js';
+import { canAccessClusterScopedKind, filterNamespaceItems, getWatchNamespaces, isNamespaceAllowed } from '../../runtime/namespace-scope.js';
 import { WatchResourceSnapshot, WatchStore } from '../watch/watch-store.js';
 import {
   mapCronJob,
@@ -85,24 +85,25 @@ export class ResourceCollector implements Collector {
         logger.warn({ err }, 'Failed to collect nodes');
         return [];
       }),
-      this.getNamespaces(namespaces).catch((err) => {
+      (canAccessClusterScopedKind('Namespace') ? this.getNamespaces(namespaces) : Promise.resolve([])).catch((err) => {
         logger.warn({ err }, 'Failed to collect namespaces');
         return [];
       }),
     ]);
 
     return {
-      pods,
-      deployments,
-      statefulSets,
-      daemonSets,
-      cronJobs,
-      jobs,
-      services,
-      ingresses,
-      pvcs,
+      pods: this.inCurrentNamespaceScope(pods),
+      deployments: this.inCurrentNamespaceScope(deployments),
+      statefulSets: this.inCurrentNamespaceScope(statefulSets),
+      daemonSets: this.inCurrentNamespaceScope(daemonSets),
+      cronJobs: this.inCurrentNamespaceScope(cronJobs),
+      jobs: this.inCurrentNamespaceScope(jobs),
+      services: this.inCurrentNamespaceScope(services),
+      ingresses: this.inCurrentNamespaceScope(ingresses),
+      pvcs: this.inCurrentNamespaceScope(pvcs),
       nodes: this.withSafeNodes(nodes),
-      namespaces: namespaceItems,
+      namespaces: (canAccessClusterScopedKind('Namespace') ? namespaceItems : [])
+        .filter((namespace) => typeof namespace.name === 'string' && isNamespaceAllowed(namespace.name)),
     };
   }
 
@@ -128,20 +129,25 @@ export class ResourceCollector implements Collector {
 
   private mapWatchSnapshot(snapshot: WatchResourceSnapshot): any {
     return {
-      pods: snapshot.pods.map(mapPod),
-      deployments: snapshot.deployments.map(mapDeployment),
-      statefulSets: snapshot.statefulSets.map(mapStatefulSet),
-      daemonSets: snapshot.daemonSets.map(mapDaemonSet),
-      cronJobs: snapshot.cronJobs.map(mapCronJob),
-      jobs: snapshot.jobs.map(mapJob),
-      services: snapshot.services.map(mapService),
-      ingresses: snapshot.ingresses.map(mapIngress),
-      pvcs: snapshot.pvcs.map(mapPvc),
+      pods: this.inCurrentNamespaceScope(snapshot.pods.map(mapPod)),
+      deployments: this.inCurrentNamespaceScope(snapshot.deployments.map(mapDeployment)),
+      statefulSets: this.inCurrentNamespaceScope(snapshot.statefulSets.map(mapStatefulSet)),
+      daemonSets: this.inCurrentNamespaceScope(snapshot.daemonSets.map(mapDaemonSet)),
+      cronJobs: this.inCurrentNamespaceScope(snapshot.cronJobs.map(mapCronJob)),
+      jobs: this.inCurrentNamespaceScope(snapshot.jobs.map(mapJob)),
+      services: this.inCurrentNamespaceScope(snapshot.services.map(mapService)),
+      ingresses: this.inCurrentNamespaceScope(snapshot.ingresses.map(mapIngress)),
+      pvcs: this.inCurrentNamespaceScope(snapshot.pvcs.map(mapPvc)),
       nodes: this.withSafeNodes(snapshot.nodes.map(mapNode)),
-      namespaces: snapshot.namespaces
+      namespaces: (canAccessClusterScopedKind('Namespace') ? snapshot.namespaces : [])
         .filter(ns => this.isNamespaceInScope(ns.metadata?.name || '', getWatchNamespaces()))
         .map(mapNamespace),
     };
+  }
+
+  /** Recheck mapped snapshot items against the latest effective namespace policy. */
+  private inCurrentNamespaceScope<T extends { namespace?: string }>(items: T[]): T[] {
+    return items.filter((item) => typeof item.namespace === 'string' && isNamespaceAllowed(item.namespace));
   }
 
   /** Return collected nodes or the local fallback node when local mode requires one. */

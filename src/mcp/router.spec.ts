@@ -7,6 +7,14 @@ import { createRequest } from './protocol.js';
 describe('MCP Router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    toolRegistry.resetForTests();
+    mcpRouter.setSessionPolicy({ allowedTools: new Set(), writeEnabled: true, generation: 1 });
+  });
+
+  it('rejects discovery before a session policy is installed', async () => {
+    mcpRouter.clearSessionPolicy();
+    const res = await mcpRouter.handleRequest(createRequest('tools/list', {}, 0));
+    expect(res.error).toMatchObject({ code: -32001, data: { code: 'TOOL_NOT_ALLOWED' } });
   });
 
   it('should list tools', async () => {
@@ -25,14 +33,16 @@ describe('MCP Router', () => {
       timeoutMs: 1000,
       version: 'v1',
       schema: z.object({ arg1: z.string() }),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: mockHandler,
     });
+    mcpRouter.setSessionPolicy({ allowedTools: new Set(['test_tool']), writeEnabled: true, generation: 1 });
 
     const req = createRequest('tools/call', { name: 'test_tool', arguments: { arg1: 'hello' } }, 1);
     const res = await mcpRouter.handleRequest(req);
 
     expect(res.result).toEqual({ success: true });
-    expect(mockHandler).toHaveBeenCalledWith({ arg1: 'hello' });
+    expect(mockHandler).toHaveBeenCalledWith({ arg1: 'hello' }, expect.objectContaining({ operationId: expect.any(String) }));
   });
 
   it('should return error for unknown tool', async () => {
@@ -55,8 +65,10 @@ describe('MCP Router', () => {
         name: z.string(),
         enabled: z.boolean().optional(),
       }),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: vi.fn(),
     });
+    mcpRouter.setSessionPolicy({ allowedTools: new Set(['metadata_tool']), writeEnabled: true, generation: 1 });
 
     const res = await mcpRouter.handleRequest(createRequest('tools/list', {}, 7));
     const tool = res.result.tools.find((entry: { name: string }) => entry.name === 'metadata_tool');
@@ -86,7 +98,7 @@ describe('MCP Router', () => {
 
     expect(res.error).toEqual({
       code: -32602,
-      message: 'Missing tool name',
+      message: 'Invalid tool name',
       data: undefined,
     });
   });
@@ -99,8 +111,10 @@ describe('MCP Router', () => {
       timeoutMs: 1000,
       version: 'v1',
       schema: z.object({ arg1: z.string() }),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: vi.fn(),
     });
+    mcpRouter.setSessionPolicy({ allowedTools: new Set(['validated_tool']), writeEnabled: true, generation: 1 });
 
     const res = await mcpRouter.handleRequest(
       createRequest('tools/call', { name: 'validated_tool', arguments: {} }, 3)
@@ -119,17 +133,19 @@ describe('MCP Router', () => {
       timeoutMs: 1000,
       version: 'v1',
       schema: z.object({}),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: vi.fn().mockRejectedValue(new Error('tool exploded')),
     });
+    mcpRouter.setSessionPolicy({ allowedTools: new Set(['failing_tool']), writeEnabled: true, generation: 1 });
 
     const res = await mcpRouter.handleRequest(
       createRequest('tools/call', { name: 'failing_tool', arguments: {} }, 4)
     );
 
     expect(res.error).toEqual({
-      code: -32603,
-      message: 'tool exploded',
-      data: undefined,
+      code: -32007,
+      message: 'Kubernetes operation failed',
+      data: { code: 'KUBERNETES_ERROR' },
     });
   });
 

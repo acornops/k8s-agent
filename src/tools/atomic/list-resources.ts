@@ -1,17 +1,21 @@
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { KubernetesListObject, KubernetesObject } from '@kubernetes/client-node';
 import { k8sClient } from '../../k8s/client.js';
 import { ToolDefinition } from '../registry.js';
 import { checkNamespaceAllowed } from '../utils.js';
+import { continuationTokenSchema, namespaceSchema, selectorSchema } from '../schemas.js';
+import { filterNamespaceItems, getEffectiveNamespaceScope, hasBoundedNamespaceInclude, isNamespaceAllowed } from '../../runtime/namespace-scope.js';
+import { ToolExecutionError } from '../errors.js';
 
 const schema = z.object({
   kind: z.enum(['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'Job', 'Service', 'Namespace', 'Node', 'Event']),
-  namespace: z.string().optional(),
-  label_selector: z.string().optional(),
-  field_selector: z.string().optional(),
+  namespace: namespaceSchema.optional(),
+  label_selector: selectorSchema.optional(),
+  field_selector: selectorSchema.optional(),
   limit: z.number().int().min(1).max(1000).optional().default(100),
-  continue_token: z.string().optional()
-});
+  continue_token: continuationTokenSchema.optional()
+}).strict();
 
 /** Convert a Kubernetes API object into a compact list item summary. */
 function summarizeResource(kind: string, item: any): Record<string, unknown> {
@@ -116,6 +120,14 @@ async function handler(params: z.infer<typeof schema>) {
   const { kind, namespace, label_selector, field_selector, limit, continue_token } = params;
   checkNamespaceAllowed(namespace);
 
+  const effectiveScope = getEffectiveNamespaceScope();
+  if (!namespace && !['Node', 'Namespace'].includes(kind) && hasBoundedNamespaceInclude()) {
+    if (effectiveScope.include.length === 0) {
+      return { kind, namespace: '*', total: 0, continue_token: '', items: [] };
+    }
+    return listAcrossAllowedNamespaces(params, effectiveScope.include.filter(isNamespaceAllowed).sort());
+  }
+
   const listOptions = {
     labelSelector: label_selector,
     fieldSelector: field_selector,
@@ -175,13 +187,109 @@ async function handler(params: z.infer<typeof schema>) {
       throw new Error(`Unsupported kind for list_resources: ${kind}`);
   }
 
-  const items = Array.isArray(response?.items) ? response.items : [];
+  let items = Array.isArray(response?.items) ? response.items : [];
+  if (!namespace && kind !== 'Node') {
+    items = kind === 'Namespace'
+      ? items.filter((item: any) => isNamespaceAllowed(item?.metadata?.name))
+      : filterNamespaceItems(items, (item: any) => item?.metadata?.namespace);
+  }
   return {
     kind,
     namespace: namespace || '*',
     total: items.length,
     continue_token: response?.metadata?._continue || '',
     items: items.map((item) => summarizeResource(kind, item))
+  };
+}
+
+interface ScopedContinueToken {
+  v: 1;
+  namespaceIndex: number;
+  namespace: string;
+  scopeHash: string;
+  kubernetesToken: string;
+}
+
+/** Bind a scoped cursor to its authorized namespace set and Kubernetes query. */
+function scopedQueryHash(params: z.infer<typeof schema>, namespaces: string[]): string {
+  return createHash('sha256').update(JSON.stringify({
+    kind: params.kind,
+    labelSelector: params.label_selector || '',
+    fieldSelector: params.field_selector || '',
+    namespaces,
+  })).digest('hex').slice(0, 24);
+}
+
+/** Decode and validate an opaque namespace-fanout cursor. */
+function decodeScopedToken(value: string | undefined, namespaces: string[], scopeHash: string): ScopedContinueToken {
+  if (!value) return { v: 1, namespaceIndex: 0, namespace: namespaces[0] || '', scopeHash, kubernetesToken: '' };
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as ScopedContinueToken;
+    if (
+      parsed.v !== 1 || !Number.isInteger(parsed.namespaceIndex) || parsed.namespaceIndex < 0 ||
+      typeof parsed.namespace !== 'string' || parsed.namespace !== namespaces[parsed.namespaceIndex] ||
+      parsed.scopeHash !== scopeHash ||
+      typeof parsed.kubernetesToken !== 'string'
+    ) {
+      throw new Error('invalid');
+    }
+    return parsed;
+  } catch {
+    throw new ToolExecutionError('INVALID_ARGUMENTS', 'Invalid scoped continuation token');
+  }
+}
+
+/** Encode namespace-fanout cursor state for a subsequent request. */
+function encodeScopedToken(token: ScopedContinueToken): string {
+  return Buffer.from(JSON.stringify(token)).toString('base64url');
+}
+
+/** List namespaced resources across the effective include set with bounded pagination. */
+async function listAcrossAllowedNamespaces(
+  params: z.infer<typeof schema>,
+  namespaces: string[]
+): Promise<Record<string, unknown>> {
+  const scopeHash = scopedQueryHash(params, namespaces);
+  const cursor = decodeScopedToken(params.continue_token, namespaces, scopeHash);
+  if (cursor.namespaceIndex >= namespaces.length) throw new ToolExecutionError('INVALID_ARGUMENTS', 'Invalid scoped continuation token');
+  const items: Array<Record<string, unknown>> = [];
+  let namespaceIndex = cursor.namespaceIndex;
+  let kubernetesToken = cursor.kubernetesToken;
+  let nextToken = '';
+
+  while (namespaceIndex < namespaces.length && items.length < params.limit) {
+    const namespace = namespaces[namespaceIndex]!;
+    if (!isNamespaceAllowed(namespace)) throw new ToolExecutionError('NAMESPACE_FORBIDDEN', 'Scoped continuation token references a forbidden namespace');
+    const page = await handler({
+      ...params,
+      namespace,
+      limit: params.limit - items.length,
+      continue_token: kubernetesToken || undefined,
+    }) as { items: Array<Record<string, unknown>>; continue_token: string };
+    items.push(...page.items);
+    if (page.continue_token) {
+      nextToken = encodeScopedToken({ v: 1, namespaceIndex, namespace, scopeHash, kubernetesToken: page.continue_token });
+      break;
+    }
+    namespaceIndex++;
+    kubernetesToken = '';
+    if (namespaceIndex < namespaces.length) {
+      nextToken = encodeScopedToken({
+        v: 1,
+        namespaceIndex,
+        namespace: namespaces[namespaceIndex]!,
+        scopeHash,
+        kubernetesToken: '',
+      });
+    }
+  }
+
+  return {
+    kind: params.kind,
+    namespace: '*',
+    total: items.length,
+    continue_token: nextToken,
+    items,
   };
 }
 
@@ -192,5 +300,8 @@ export const listResourcesTool: ToolDefinition = {
   timeoutMs: 12000,
   version: 'v1',
   schema,
+  scopeResolver: (params) => ['Node', 'Namespace'].includes(params.kind)
+    ? ({ type: 'cluster', kind: params.kind })
+    : ({ type: 'namespace-collection', namespace: params.namespace }),
   handler
 };

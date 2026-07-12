@@ -15,7 +15,7 @@ import { checkMetricsApi } from '../k8s/metrics.js';
 import { mcpRouter } from '../mcp/router.js';
 import { SnapshotManager } from './snapshot-manager.js';
 import { registerAllTools } from '../tools/index.js';
-import { getWatchNamespaces, NamespaceScope, setNamespaceScope } from '../runtime/namespace-scope.js';
+import { clearRemoteNamespaceScope, isNamespaceScoped, NamespaceScope, setNamespaceScope } from '../runtime/namespace-scope.js';
 import { WatchStore } from './watch/watch-store.js';
 import { WatchManager } from './watch/watch-manager.js';
 import { ResourceCollector } from './collectors/resource-collector.js';
@@ -88,8 +88,8 @@ export class LifecycleManager {
   public start(): void {
     if (this.running) return;
     this.running = true;
-    this.sessionReady = false;
     this.runtimeGeneration++;
+    this.clearAuthenticatedSession(false);
     logger.info('Starting active agent runtime');
     this.client.connect();
   }
@@ -98,12 +98,9 @@ export class LifecycleManager {
   public stop(): void {
     if (!this.running) return;
     this.running = false;
-    this.sessionReady = false;
     this.runtimeGeneration++;
+    this.clearAuthenticatedSession();
     logger.info('Stopping active agent runtime');
-    this.snapshotManager.stop();
-    this.watchManager.stop();
-    this.stopHeartbeat();
     this.client.close();
   }
 
@@ -145,6 +142,8 @@ export class LifecycleManager {
    */
   private async handleOpen(): Promise<void> {
     if (!this.running) return;
+    this.runtimeGeneration++;
+    this.clearAuthenticatedSession(false);
     logger.info('Performing handshake...');
     this.refreshMetricsAvailability();
 
@@ -158,7 +157,7 @@ export class LifecycleManager {
       supportedCapabilities: config.ACORNOPS_AGENT_WRITE_ENABLED ? ['read', 'write'] : ['read'],
       clusterFeatures: {
         metricsApiAvailable: this.metricsApiAvailable,
-        rbacMode: getWatchNamespaces() ? 'namespace' : 'cluster-wide',
+        rbacMode: isNamespaceScoped() ? 'namespace' : 'cluster-wide',
       }
     }, 'handshake-1');
 
@@ -169,15 +168,27 @@ export class LifecycleManager {
     if (!this.running) return;
     try {
       const message = JSON.parse(normalizeIncomingData(data));
-      logger.debug({ message }, 'Received message');
+      if (!message || typeof message !== 'object' || Array.isArray(message)) {
+        throw new Error('Invalid JSON-RPC payload');
+      }
+      logger.debug({ id: message?.id, method: message?.method }, 'Received JSON-RPC message');
 
-      if (message.id === 'handshake-1') {
+      if (message.id === 'handshake-1' && !this.sessionReady) {
         this.handleHandshakeResponse(message);
         return;
       }
 
       if ('method' in message && 'id' in message) {
         if (message.method === 'config/update_namespace_scope') {
+          if (!this.sessionReady) {
+            this.sendOutbound(JSON.stringify(createErrorResponse(
+              message.id,
+              -32001,
+              'Tool session is not ready',
+              { code: 'TOOL_NOT_ALLOWED' }
+            )));
+            return;
+          }
           const response = this.handleNamespaceScopeUpdate(message as JsonRpcRequest);
           this.sendOutbound(JSON.stringify(response));
           return;
@@ -197,8 +208,8 @@ export class LifecycleManager {
   private handleHandshakeResponse(response: JsonRpcResponse): void {
     if (!this.running) return;
     if (response.error) {
-      this.sessionReady = false;
-      logger.error({ error: response.error }, 'Handshake failed');
+      this.clearAuthenticatedSession();
+      logger.error({ code: response.error.code }, 'Handshake failed');
       this.client.forceReconnect();
       return;
     }
@@ -207,6 +218,10 @@ export class LifecycleManager {
       workspaceId?: unknown;
       targetId?: unknown;
       targetType?: unknown;
+      sessionPolicy?: {
+        allowedTools?: unknown;
+        writeEnabled?: unknown;
+      };
       config?: {
         namespaceScope?: Partial<NamespaceScope>;
         snapshotInterval?: number;
@@ -216,8 +231,18 @@ export class LifecycleManager {
     if (
       !result ||
       typeof result.workspaceId !== 'string' ||
+      result.workspaceId.trim().length === 0 ||
       result.targetId !== config.TARGET_ID ||
-      result.targetType !== KUBERNETES_TARGET_TYPE
+      result.targetType !== KUBERNETES_TARGET_TYPE ||
+      !result.sessionPolicy ||
+      !Array.isArray(result.sessionPolicy.allowedTools) ||
+      result.sessionPolicy.allowedTools.length > 64 ||
+      !result.sessionPolicy.allowedTools.every((name): name is string => typeof name === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(name)) ||
+      new Set(result.sessionPolicy.allowedTools).size !== result.sessionPolicy.allowedTools.length ||
+      typeof result.sessionPolicy.writeEnabled !== 'boolean' ||
+      (result.config !== undefined && (!result.config || typeof result.config !== 'object' || Array.isArray(result.config))) ||
+      (result.config?.snapshotInterval !== undefined && (!Number.isInteger(result.config.snapshotInterval) || result.config.snapshotInterval <= 0)) ||
+      (result.config?.maxSnapshotBytes !== undefined && (!Number.isInteger(result.config.maxSnapshotBytes) || result.config.maxSnapshotBytes <= 0 || result.config.maxSnapshotBytes > 10 * 1024 * 1024))
     ) {
       logger.error(
         {
@@ -225,18 +250,31 @@ export class LifecycleManager {
           receivedTargetId: result?.targetId,
           receivedTargetType: result?.targetType
         },
-        'Handshake response target scope mismatch'
+        'Handshake response contract rejected'
       );
-      this.sessionReady = false;
+      this.clearAuthenticatedSession();
       this.client.forceReconnect();
       return;
     }
 
-    const { workspaceId, targetId, targetType, config: remoteConfig } = result;
+    const { workspaceId, targetId, targetType, sessionPolicy, config: remoteConfig } = result;
 
-    if (remoteConfig?.namespaceScope) {
-      setNamespaceScope(remoteConfig.namespaceScope);
+    if (remoteConfig?.namespaceScope !== undefined) {
+      try {
+        setNamespaceScope(remoteConfig.namespaceScope);
+      } catch {
+        logger.error('Handshake response contained an invalid namespace scope');
+        this.clearAuthenticatedSession();
+        this.client.forceReconnect();
+        return;
+      }
     }
+
+    mcpRouter.setSessionPolicy({
+      allowedTools: new Set(sessionPolicy!.allowedTools as string[]),
+      writeEnabled: Boolean(sessionPolicy!.writeEnabled),
+      generation: this.runtimeGeneration,
+    });
 
     logger.info({ workspaceId, targetId, targetType }, 'Handshake successful');
     this.client.markReady();
@@ -244,7 +282,7 @@ export class LifecycleManager {
     if (!this.running) return;
     this.sessionReady = true;
     this.watchManager.start();
-    this.snapshotManager.start(remoteConfig?.snapshotInterval || 60, remoteConfig?.maxSnapshotBytes);
+    this.snapshotManager.start(remoteConfig?.snapshotInterval ?? 60, remoteConfig?.maxSnapshotBytes);
     this.startHeartbeat();
   }
 
@@ -255,7 +293,10 @@ export class LifecycleManager {
 
   private handleNamespaceScopeUpdate(request: JsonRpcRequest): JsonRpcResponse {
     try {
-      const scope = setNamespaceScope((request.params as { namespaceScope?: unknown } | undefined)?.namespaceScope || {});
+      if (!request.params || typeof request.params !== 'object' || Array.isArray(request.params) || !('namespaceScope' in request.params)) {
+        throw new Error('namespaceScope is required');
+      }
+      const scope = setNamespaceScope((request.params as { namespaceScope: unknown }).namespaceScope);
       logger.info({ scope }, 'Updated namespace scope from control plane');
       if (this.running && this.sessionReady) {
         this.watchManager.restart();
@@ -263,7 +304,7 @@ export class LifecycleManager {
       }
       return createResponse(request.id, {
         namespaceScope: scope,
-        rbacMode: getWatchNamespaces() ? 'namespace' : 'cluster-wide'
+        rbacMode: isNamespaceScoped() ? 'namespace' : 'cluster-wide'
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update namespace scope';
@@ -273,10 +314,19 @@ export class LifecycleManager {
 
   private handleClose(): void {
     if (!this.running) return;
+    this.runtimeGeneration++;
+    this.clearAuthenticatedSession();
+  }
+
+  private clearAuthenticatedSession(stopServices = true): void {
     this.sessionReady = false;
-    this.snapshotManager.stop();
-    this.watchManager.stop();
-    this.stopHeartbeat();
+    mcpRouter.clearSessionPolicy();
+    clearRemoteNamespaceScope();
+    if (stopServices) {
+      this.snapshotManager.stop();
+      this.watchManager.stop();
+      this.stopHeartbeat();
+    }
   }
 
   private startHeartbeat(): void {

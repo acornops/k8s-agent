@@ -8,6 +8,8 @@ const {
   checkMetricsApi,
   registerAllTools,
   handleRequest,
+  setSessionPolicy,
+  clearSessionPolicy,
   MockWatchManager,
   watchManagerInstances,
 } = vi.hoisted(() => {
@@ -33,6 +35,8 @@ const {
   const checkMetricsApi = vi.fn();
   const registerAllTools = vi.fn();
   const handleRequest = vi.fn();
+  const setSessionPolicy = vi.fn();
+  const clearSessionPolicy = vi.fn();
   const watchManagerInstances: any[] = [];
 
   class MockWebSocketClient extends SimpleEmitter {
@@ -77,6 +81,8 @@ const {
     checkMetricsApi,
     registerAllTools,
     handleRequest,
+    setSessionPolicy,
+    clearSessionPolicy,
     MockWatchManager,
     watchManagerInstances,
   };
@@ -100,7 +106,7 @@ vi.mock('../transport/websocket-client.js', () => ({ WebSocketClient: MockWebSoc
 vi.mock('./snapshot-manager.js', () => ({ SnapshotManager: MockSnapshotManager }));
 vi.mock('./watch/watch-manager.js', () => ({ WatchManager: MockWatchManager }));
 vi.mock('../k8s/metrics.js', () => ({ checkMetricsApi }));
-vi.mock('../mcp/router.js', () => ({ mcpRouter: { handleRequest } }));
+vi.mock('../mcp/router.js', () => ({ mcpRouter: { handleRequest, setSessionPolicy, clearSessionPolicy } }));
 vi.mock('../tools/index.js', () => ({ registerAllTools }));
 
 import { LifecycleManager } from './lifecycle.js';
@@ -174,6 +180,7 @@ describe('LifecycleManager', () => {
           workspaceId: 'ws-1',
           targetId: 'cluster-1',
           targetType: 'kubernetes',
+          sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true },
           config: {
             snapshotInterval: 15,
             maxSnapshotBytes: 2048,
@@ -224,6 +231,68 @@ describe('LifecycleManager', () => {
     expect(snapshotManagerInstances[0]!.start).not.toHaveBeenCalled();
   });
 
+  it('rejects a handshake without mandatory session policy', async () => {
+    const lifecycle = new LifecycleManager();
+    lifecycle.start();
+    clientInstances[0]!.emit('message', JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'handshake-1',
+      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', config: {} },
+    }));
+    await Promise.resolve();
+
+    expect(clientInstances[0]!.forceReconnect).toHaveBeenCalledTimes(1);
+    expect(setSessionPolicy).not.toHaveBeenCalled();
+    expect(snapshotManagerInstances[0]!.start).not.toHaveBeenCalled();
+  });
+
+  it('uses a new authorization generation after every reconnect', async () => {
+    const lifecycle = new LifecycleManager();
+    lifecycle.start();
+    clientInstances[0]!.emit('open');
+    clientInstances[0]!.emit('message', JSON.stringify({
+      jsonrpc: '2.0', id: 'handshake-1',
+      result: {
+        workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes',
+        sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true }, config: {},
+      },
+    }));
+    await Promise.resolve();
+    const firstGeneration = setSessionPolicy.mock.calls.at(-1)![0].generation;
+
+    clientInstances[0]!.emit('close');
+    clientInstances[0]!.emit('open');
+    clientInstances[0]!.emit('message', JSON.stringify({
+      jsonrpc: '2.0', id: 'handshake-1',
+      result: {
+        workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes',
+        sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true }, config: {},
+      },
+    }));
+    await Promise.resolve();
+    const secondGeneration = setSessionPolicy.mock.calls.at(-1)![0].generation;
+
+    expect(secondGeneration).toBeGreaterThan(firstGeneration);
+    expect(clearSessionPolicy).toHaveBeenCalled();
+  });
+
+  it('rejects malformed remote namespace policy without installing a session', async () => {
+    const lifecycle = new LifecycleManager();
+    lifecycle.start();
+    clientInstances[0]!.emit('message', JSON.stringify({
+      jsonrpc: '2.0', id: 'handshake-1',
+      result: {
+        workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes',
+        sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true },
+        config: { namespaceScope: { include: ['INVALID'] } },
+      },
+    }));
+    await Promise.resolve();
+
+    expect(clientInstances[0]!.forceReconnect).toHaveBeenCalledTimes(1);
+    expect(setSessionPolicy).not.toHaveBeenCalled();
+  });
+
   it('routes JSON-RPC requests through the MCP router and returns responses', async () => {
     const lifecycle = new LifecycleManager();
     lifecycle.start();
@@ -246,7 +315,7 @@ describe('LifecycleManager', () => {
     );
   });
 
-  it('applies pre-handshake namespace scope updates without starting watches', async () => {
+  it('rejects pre-handshake namespace scope updates', async () => {
     const lifecycle = new LifecycleManager();
     lifecycle.start();
 
@@ -274,13 +343,11 @@ describe('LifecycleManager', () => {
       JSON.stringify({
         jsonrpc: '2.0',
         id: 'scope-1',
-        result: {
-          namespaceScope: {
-            include: ['default', 'payments'],
-            exclude: ['payments']
-          },
-          rbacMode: 'namespace'
-        }
+        error: {
+          code: -32001,
+          message: 'Tool session is not ready',
+          data: { code: 'TOOL_NOT_ALLOWED' }
+        },
       })
     );
   });
@@ -292,7 +359,7 @@ describe('LifecycleManager', () => {
     clientInstances[0]!.emit('message', JSON.stringify({
       jsonrpc: '2.0',
       id: 'handshake-1',
-      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', config: {} },
+      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true }, config: {} },
     }));
     await Promise.resolve();
 
@@ -340,13 +407,13 @@ describe('LifecycleManager', () => {
     clientInstances[0]!.emit('message', JSON.stringify({
       jsonrpc: '2.0',
       id: 'handshake-1',
-      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', config: {} },
+      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true }, config: {} },
     }));
     await Promise.resolve();
     clientInstances[0]!.emit('close');
 
-    expect(snapshotManagerInstances[0]!.stop).toHaveBeenCalledTimes(1);
-    expect(watchManagerInstances[0]!.stop).toHaveBeenCalledTimes(1);
+    expect(snapshotManagerInstances[0]!.stop).toHaveBeenCalledTimes(2);
+    expect(watchManagerInstances[0]!.stop).toHaveBeenCalledTimes(2);
 
     const sendCount = clientInstances[0]!.send.mock.calls.length;
     vi.advanceTimersByTime(30000);
@@ -370,7 +437,7 @@ describe('LifecycleManager', () => {
     clientInstances[0]!.emit('message', JSON.stringify({
       jsonrpc: '2.0',
       id: 'handshake-1',
-      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', config: {} },
+      result: { workspaceId: 'ws-1', targetId: 'cluster-1', targetType: 'kubernetes', sessionPolicy: { allowedTools: ['list_resources'], writeEnabled: true }, config: {} },
     }));
     await Promise.resolve();
     vi.advanceTimersByTime(30000);

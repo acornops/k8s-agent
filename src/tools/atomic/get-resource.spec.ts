@@ -213,7 +213,7 @@ describe('getResourceTool', () => {
         name: 'api',
         namespace: 'kube-system',
       }),
-    ).rejects.toThrow("Namespace 'kube-system' is outside the allowed namespace scope: default.");
+    ).rejects.toThrow('Namespace is outside the allowed scope: kube-system');
 
     expect(k8sClient.core.readNamespacedPod).not.toHaveBeenCalled();
   });

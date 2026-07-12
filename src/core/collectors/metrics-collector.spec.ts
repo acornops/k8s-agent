@@ -8,6 +8,7 @@ vi.mock('../../k8s/metrics.js', () => ({
 
 vi.mock('../../runtime/namespace-scope.js', () => ({
   getWatchNamespaces: vi.fn(),
+  isNamespaceAllowed: vi.fn(() => true),
 }));
 
 vi.mock('../../config.js', () => ({
@@ -113,5 +114,21 @@ describe('MetricsCollector', () => {
     });
 
     expect(getPodMetrics).toHaveBeenCalledWith();
+  });
+
+  it('preserves node metrics when namespace policy is bounded', async () => {
+    vi.mocked(checkMetricsApi).mockResolvedValue(true);
+    vi.mocked(getWatchNamespaces).mockReturnValue(['team-a']);
+    vi.mocked(getPodMetrics).mockResolvedValue([]);
+    vi.mocked(getNodeMetrics).mockResolvedValue([
+      { name: 'node-1', usage: { cpu: '250m', memory: '1Gi' } },
+    ]);
+
+    await expect(new MetricsCollector().collect()).resolves.toEqual({
+      available: true,
+      pods: [],
+      nodes: [{ name: 'node-1', usage: { cpu: '250m', memory: '1Gi' } }],
+    });
+    expect(getNodeMetrics).toHaveBeenCalledOnce();
   });
 });

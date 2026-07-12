@@ -6,6 +6,7 @@
 - The default install is one read-only replica.
 - Multi-replica installs are active-passive only and require Kubernetes Lease leader election.
 - Write-capable tools require explicit RBAC and configuration opt-in.
+- The control-plane session may narrow locally enabled tools and namespaces but cannot expand them.
 
 ## Required Environment
 
@@ -48,6 +49,16 @@ Bounded, paginated list calls are still used for initial cache sync, namespace-s
 - No telemetry: verify Kubernetes RBAC, namespace scope, metrics-server availability, and collector logs.
 - Slow or skipped telemetry: inspect `watch-manager` and `snapshot-manager` logs, increase the snapshot interval if collection takes too long, then tune `ACORNOPS_AGENT_K8S_CONCURRENCY` and `ACORNOPS_AGENT_K8S_LIST_PAGE_LIMIT` if list fallback or relist recovery is the bottleneck.
 - HA does not elect a leader: verify Lease RBAC and `leaderElection.enabled=true`.
+- Tool rejected before execution: verify handshake session policy, local namespace maximum, and write enablement.
+- Write tool times out: treat the outcome as unknown, retain the returned operation ID, and inspect the workload before deciding whether to retry the same tool call ID.
+
+## Tool Safety Defaults
+
+- Read tool concurrency: 4; write tool concurrency: 1; queued calls: 16 shared across both gates.
+- Maximum tool input: 1 MiB; maximum serialized output: 2 MiB.
+- Maximum scale target: 100 replicas; operators may configure a lower ceiling.
+- Scale-to-zero is disabled unless both the operator and the caller confirm it.
+- Namespace-scoped installs use their Role namespaces as the local maximum scope.
 
 ## Required Validation
 

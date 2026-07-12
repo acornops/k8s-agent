@@ -1,7 +1,18 @@
 import { z } from 'zod';
 
-export type ToolHandler = (params: any) => Promise<any>;
 export type ToolCapability = 'read' | 'write';
+
+export type ToolScope =
+  | { type: 'namespaced'; namespace: string }
+  | { type: 'namespace-collection'; namespace?: string }
+  | { type: 'cluster'; kind: string; namespace?: string };
+
+export interface ToolExecutionContext {
+  operationId: string;
+  requestId: string | number;
+  sessionGeneration: number;
+  signal?: AbortSignal;
+}
 
 /**
  * Defines a tool that can be executed by the agent.
@@ -14,7 +25,8 @@ export interface ToolDefinition {
   version: string;
   deprecated?: boolean;
   schema: z.ZodTypeAny;
-  handler: ToolHandler;
+  scopeResolver: (params: any) => ToolScope;
+  handler: (params: any, context?: ToolExecutionContext) => Promise<any>;
 }
 
 /**
@@ -28,6 +40,9 @@ class ToolRegistry {
    * @param tool The tool definition to register.
    */
   public register(tool: ToolDefinition): void {
+    if (this.tools.has(tool.name)) {
+      throw new Error(`Duplicate tool name: ${tool.name}`);
+    }
     this.tools.set(tool.name, tool);
   }
 
@@ -39,6 +54,11 @@ class ToolRegistry {
   /** Return all registered tools. */
   public getAll(): ToolDefinition[] {
     return Array.from(this.tools.values());
+  }
+
+  /** Clear registered tools for isolated tests. */
+  public resetForTests(): void {
+    this.tools.clear();
   }
 }
 

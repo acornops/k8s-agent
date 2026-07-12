@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../k8s/client.js', () => ({
   k8sClient: {
@@ -31,10 +31,15 @@ vi.mock('../../k8s/client.js', () => ({
 
 import { k8sClient } from '../../k8s/client.js';
 import { listResourcesTool } from './list-resources.js';
+import { setNamespaceScope } from '../../runtime/namespace-scope.js';
 
 describe('listResourcesTool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    setNamespaceScope({ include: [], exclude: [] });
   });
 
   it('lists namespaced pods and returns summarized pod data', async () => {
@@ -91,6 +96,63 @@ describe('listResourcesTool', () => {
       limit: 50,
       _continue: 'cursor-1',
     });
+  });
+
+  it('fans out an omitted namespace only across the effective include-list', async () => {
+    setNamespaceScope({ include: ['team-b', 'team-a'], exclude: [] });
+    vi.mocked(k8sClient.core.listNamespacedPod)
+      .mockResolvedValueOnce({ metadata: {}, items: [{ metadata: { name: 'a', namespace: 'team-a' }, status: {} }] } as never)
+      .mockResolvedValueOnce({ metadata: {}, items: [{ metadata: { name: 'b', namespace: 'team-b' }, status: {} }] } as never);
+
+    const result = await listResourcesTool.handler({ kind: 'Pod', limit: 100 });
+
+    expect(result.items.map((item: any) => item.namespace)).toEqual(['team-a', 'team-b']);
+    expect(k8sClient.core.listPodForAllNamespaces).not.toHaveBeenCalled();
+    expect(k8sClient.core.listNamespacedPod).toHaveBeenNthCalledWith(1, expect.objectContaining({ namespace: 'team-a' }));
+    expect(k8sClient.core.listNamespacedPod).toHaveBeenNthCalledWith(2, expect.objectContaining({ namespace: 'team-b' }));
+  });
+
+  it('continues scoped pagination only in the namespace encoded by the cursor', async () => {
+    setNamespaceScope({ include: ['team-a', 'team-b'], exclude: [] });
+    vi.mocked(k8sClient.core.listNamespacedPod)
+      .mockResolvedValueOnce({
+        metadata: { _continue: 'kube-page-2' },
+        items: [{ metadata: { name: 'a-1', namespace: 'team-a' }, status: {} }],
+      } as never)
+      .mockResolvedValueOnce({
+        metadata: {},
+        items: [{ metadata: { name: 'a-2', namespace: 'team-a' }, status: {} }],
+      } as never);
+
+    const first = await listResourcesTool.handler({ kind: 'Pod', limit: 1 }) as any;
+    const second = await listResourcesTool.handler({
+      kind: 'Pod', limit: 1, continue_token: first.continue_token,
+    }) as any;
+
+    expect(first.items[0].name).toBe('a-1');
+    expect(second.items[0].name).toBe('a-2');
+    expect(k8sClient.core.listNamespacedPod).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      namespace: 'team-a',
+      _continue: 'kube-page-2',
+    }));
+  });
+
+  it('rejects a scoped cursor after policy changes its namespace position', async () => {
+    setNamespaceScope({ include: ['team-a', 'team-b'], exclude: [] });
+    vi.mocked(k8sClient.core.listNamespacedPod).mockResolvedValueOnce({
+      metadata: { _continue: 'kube-page-2' },
+      items: [{ metadata: { name: 'a-1', namespace: 'team-a' }, status: {} }],
+    } as never);
+    const first = await listResourcesTool.handler({ kind: 'Pod', limit: 1 }) as any;
+
+    await expect(listResourcesTool.handler({
+      kind: 'Pod', limit: 1, label_selector: 'app=changed', continue_token: first.continue_token,
+    })).rejects.toMatchObject({ toolCode: 'INVALID_ARGUMENTS' });
+    setNamespaceScope({ include: ['team-b'], exclude: [] });
+    await expect(listResourcesTool.handler({
+      kind: 'Pod', limit: 1, continue_token: first.continue_token,
+    })).rejects.toMatchObject({ toolCode: 'INVALID_ARGUMENTS' });
+    expect(k8sClient.core.listNamespacedPod).toHaveBeenCalledTimes(1);
   });
 
   it('lists deployments across all namespaces and summarizes replica status', async () => {

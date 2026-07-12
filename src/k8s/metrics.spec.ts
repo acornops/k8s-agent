@@ -10,6 +10,7 @@ vi.mock('./client.js', () => ({
 }));
 
 import { k8sClient } from './client.js';
+import { setNamespaceScope } from '../runtime/namespace-scope.js';
 import {
   __resetMetricsApiProbeCacheForTest,
   checkMetricsApi,
@@ -21,6 +22,7 @@ describe('metrics helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetMetricsApiProbeCacheForTest();
+    setNamespaceScope({ include: [], exclude: [] });
   });
 
   it('checks metrics api availability with a bounded probe', async () => {
@@ -38,6 +40,17 @@ describe('metrics helpers', () => {
   it('reports false when the metrics api probe fails', async () => {
     (k8sClient.customObjects.listClusterCustomObject as any).mockRejectedValue(new Error('missing'));
     await expect(checkMetricsApi()).resolves.toBe(false);
+  });
+
+  it('probes the metrics API through an allowed namespace when scope is bounded', async () => {
+    setNamespaceScope({ include: ['team-a'], exclude: [] });
+    vi.mocked(k8sClient.customObjects.listNamespacedCustomObject).mockResolvedValue({ items: [] } as never);
+
+    await expect(checkMetricsApi()).resolves.toBe(true);
+    expect(k8sClient.customObjects.listNamespacedCustomObject).toHaveBeenCalledWith({
+      group: 'metrics.k8s.io', version: 'v1beta1', namespace: 'team-a', plural: 'pods', limit: 1,
+    });
+    expect(k8sClient.customObjects.listClusterCustomObject).not.toHaveBeenCalled();
   });
 
   it('caches successful and failed metrics api probe results', async () => {

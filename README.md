@@ -71,11 +71,20 @@ The agent is configured via environment variables:
 | `ACORNOPS_AGENT_KUBECONFIG_SKIP_TLS_VERIFY` | Skip TLS verification after loopback-host rewrite (local k3d convenience only) | `false` |
 | `ACORNOPS_AGENT_K8S_CONCURRENCY` | Process-wide maximum concurrent Kubernetes API list requests during snapshot collection | `8` |
 | `ACORNOPS_AGENT_K8S_LIST_PAGE_LIMIT` | Kubernetes API list page size used when collecting large snapshots | `500` |
+| `ACORNOPS_AGENT_TOOL_READ_CONCURRENCY` | Maximum concurrent read tool calls | `4` |
+| `ACORNOPS_AGENT_TOOL_WRITE_CONCURRENCY` | Maximum concurrent write tool calls | `1` |
+| `ACORNOPS_AGENT_TOOL_QUEUE_LIMIT` | Maximum queued calls shared across read and write gates | `16` |
+| `ACORNOPS_AGENT_TOOL_MAX_INPUT_BYTES` | Maximum inbound WebSocket/tool request size | `1048576` |
+| `ACORNOPS_AGENT_TOOL_MAX_OUTPUT_BYTES` | Maximum serialized tool result size | `2097152` |
+| `ACORNOPS_AGENT_SCALE_MAX_REPLICAS` | Maximum accepted scale target (hard ceiling: 100) | `100` |
+| `ACORNOPS_AGENT_ALLOW_SCALE_TO_ZERO` | Operator opt-in required before caller-confirmed scale-to-zero | `false` |
+| `ACORNOPS_AGENT_RBAC_SCOPE` | Local RBAC boundary (`cluster` or `namespace`) | `cluster` |
 | `ACORNOPS_AGENT_WATCH_CACHE_ENABLED` | Build snapshots from a Kubernetes watch-backed local cache when ready | `true` |
 | `ACORNOPS_AGENT_WATCH_SNAPSHOT_DEBOUNCE_MS` | Debounce window for snapshots triggered by watched resource or Warning event changes | `5000` |
 | `ACORNOPS_AGENT_WATCH_CACHE_SYNC_TIMEOUT_MS` | Time to wait for watch cache warmup before using list fallback | `15000` |
 | `ACORNOPS_AGENT_WATCH_TIMEOUT_SECONDS` | Kubernetes watch stream timeout before clean reconnect | `300` |
 | `ACORNOPS_AGENT_WATCH_NAMESPACES` | Comma-separated list of namespaces to watch | All |
+| `ACORNOPS_AGENT_EXCLUDE_NAMESPACES` | Comma-separated local namespace deny-list | Empty |
 | `ACORNOPS_AGENT_WRITE_ENABLED` | Set to `true` to enable mutation tools | `false` |
 | `ACORNOPS_AGENT_LOCAL_FALLBACK_ENABLED` | Emit local synthetic node/usage snapshot when Kubernetes API is unreachable (dev only) | `false` |
 | `ACORNOPS_AGENT_LOG_LEVEL` | Logging level (`info`, `debug`, `error`, `warn`, `trace`) | `info` |
@@ -391,9 +400,9 @@ Run the checks that match the change:
 
 ## Tools Available
 
-- `get_pod_logs`: Read pod logs (max 1MB).
-- `describe_resource`: Fetch full JSON object of any supported resource.
-- `restart_deployment`: Rolling restart via annotation patch.
-- `scale_workload`: Scale Deployments or StatefulSets.
-- `simulate_patch`: Generate a JSON Diff for a proposed change.
-- `apply_remediation`: Execute a sequence of tools with pre-conditions and UID verification.
+- `list_resources`: List bounded Kubernetes resource summaries.
+- `get_resource`: Fetch a redacted Kubernetes object by name.
+- `get_resource_logs`: Read bounded Pod logs (max 1 MiB).
+- `restart_workload`: Guarded rolling restart for Deployments, StatefulSets, and DaemonSets.
+- `scale_workload`: Guarded scaling for Deployments and StatefulSets.
+- `simulate_patch`: Generate a redacted JSON Patch-style diff without applying it.

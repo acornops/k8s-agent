@@ -4,9 +4,32 @@ import { k8sClient } from '../../k8s/client.js';
 import { ToolDefinition } from '../registry.js';
 import { loadYaml } from '@kubernetes/client-node';
 import { checkNamespaceAllowed } from '../utils.js';
+import { redactKubernetesResource } from '../resource-redaction.js';
+import { isKubernetesNotFound } from '../errors.js';
+import { kubernetesNameSchema, namespaceSchema } from '../schemas.js';
+
+const supportedKindSchema = z.enum(['Pod', 'Deployment', 'Service', 'HorizontalPodAutoscaler']);
+const resourceDocumentSchema = z.object({
+  kind: supportedKindSchema,
+  metadata: z.object({
+    name: kubernetesNameSchema,
+    namespace: namespaceSchema,
+  }).passthrough(),
+}).passthrough();
+
+/** Parse and validate the supported namespaced Kubernetes document. */
+function parseResourceDocument(resourceYaml: string): z.infer<typeof resourceDocumentSchema> {
+  return resourceDocumentSchema.parse(loadYaml(resourceYaml));
+}
 
 const schema = z.object({
-  resourceYaml: z.string(),
+  resourceYaml: z.string().min(1).max(256 * 1024),
+}).strict().superRefine((value, ctx) => {
+  try {
+    parseResourceDocument(value.resourceYaml);
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['resourceYaml'], message: 'A supported namespaced Kubernetes resource is required' });
+  }
 });
 
 /** Handle a dry-run patch simulation request. */
@@ -14,10 +37,7 @@ async function handler(params: z.infer<typeof schema>) {
   const { resourceYaml } = params;
 
   // Parse YAML
-  const doc = loadYaml(resourceYaml) as any;
-  if (!doc || !doc.kind || !doc.metadata) {
-      throw new Error('Invalid resource YAML');
-  }
+  const doc = parseResourceDocument(resourceYaml);
 
   const name = doc.metadata.name;
   const namespace = doc.metadata.namespace;
@@ -29,7 +49,7 @@ async function handler(params: z.infer<typeof schema>) {
   try {
       current = await fetchResource(kind, name, namespace);
   } catch (err) {
-      // Resource might not exist yet (create)
+      if (!isKubernetesNotFound(err)) throw err;
       current = null;
   }
 
@@ -41,11 +61,11 @@ async function handler(params: z.infer<typeof schema>) {
   if (!current) {
       return {
           op: 'create',
-          diff: [{ op: 'add', path: '/', value: doc }]
+          diff: [{ op: 'add', path: '/', value: redactKubernetesResource(doc) }]
       };
   }
 
-  const diff = jsonpatch.compare(current, doc);
+  const diff = jsonpatch.compare(redactKubernetesResource(current), redactKubernetesResource(doc));
 
   return {
       op: 'patch',
@@ -73,5 +93,9 @@ export const simulatePatchTool: ToolDefinition = {
   timeoutMs: 15000,
   version: 'v1',
   schema,
+  scopeResolver: (params) => {
+    const doc = parseResourceDocument(params.resourceYaml);
+    return { type: 'namespaced', namespace: doc.metadata.namespace };
+  },
   handler,
 };

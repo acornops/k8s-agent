@@ -50,6 +50,16 @@ config:
   k8sConcurrency: 8
   # Kubernetes API list page size used when collecting large snapshots.
   k8sListPageLimit: 500
+  # Maximum concurrent read and write tool calls and queued calls.
+  toolReadConcurrency: 4
+  toolWriteConcurrency: 1
+  toolQueueLimit: 16
+  # JSON-RPC tool boundary size limits.
+  toolMaxInputBytes: 1048576
+  toolMaxOutputBytes: 2097152
+  # Scaling guardrails. Scale-to-zero additionally requires caller confirmation.
+  scaleMaxReplicas: 100
+  allowScaleToZero: false
   # Whether the agent maintains a Kubernetes watch-backed cache for snapshots.
   watchCacheEnabled: true
   # Debounce window for snapshots triggered by watched resource changes.
@@ -58,8 +68,8 @@ config:
   watchCacheSyncTimeoutMs: 15000
   # Kubernetes watch timeout; streams reconnect after this duration.
   watchTimeoutSeconds: 300
-  # When true, the agent serves a local fallback mode, allowing read-only tool
-  # calls even when the control-plane WebSocket is disconnected.
+  # When true, collectors may emit local synthetic metrics/resources when the
+  # Kubernetes API is unavailable. Intended for development only.
   localFallbackEnabled: false
 
 leaderElection:

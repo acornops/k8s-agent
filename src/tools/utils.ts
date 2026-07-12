@@ -1,10 +1,11 @@
 import { config } from '../config.js';
-import { getNamespaceScope, isNamespaceAllowed } from '../runtime/namespace-scope.js';
+import { isNamespaceAllowed } from '../runtime/namespace-scope.js';
+import { ToolExecutionError } from './errors.js';
 
 /** Throw when write tools are disabled by configuration. */
 export function checkWriteEnabled() {
   if (!config.ACORNOPS_AGENT_WRITE_ENABLED) {
-    throw new Error('Write operations are disabled. Set ACORNOPS_AGENT_WRITE_ENABLED=true to enable.');
+    throw new ToolExecutionError('WRITE_DISABLED', 'Write operations are disabled');
   }
 }
 
@@ -12,17 +13,15 @@ export function checkWriteEnabled() {
 export function checkNamespaceAllowed(namespace?: string) {
   if (!namespace) return;
   if (!isNamespaceAllowed(namespace)) {
-    const scope = getNamespaceScope();
-    const included = scope.include.length > 0 ? scope.include.join(', ') : 'all non-excluded namespaces';
-    const excluded = scope.exclude.length > 0 ? ` Excluded namespaces: ${scope.exclude.join(', ')}.` : '';
-    throw new Error(`Namespace '${namespace}' is outside the allowed namespace scope: ${included}.${excluded}`);
+    throw new ToolExecutionError('NAMESPACE_FORBIDDEN', `Namespace is outside the allowed scope: ${namespace}`);
   }
 }
 
 /** Build standard AcornOps annotations for a write operation. */
-export function getAnnotations(reason: string) {
+export function getAnnotations(reason: string, operationId?: string) {
   return {
     'acornops.dev/applied-by': `cluster-${config.ACORNOPS_CLUSTER_ID}`,
     'acornops.dev/reason': reason,
+    ...(operationId ? { 'acornops.dev/operation-id': operationId } : {}),
   };
 }

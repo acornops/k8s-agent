@@ -37,9 +37,10 @@ describe('Restart Workload Tool', () => {
   it('should call deployment patch if write is enabled', async () => {
     config.ACORNOPS_AGENT_WRITE_ENABLED = true;
     (k8sClient.apps.readNamespacedDeployment as any).mockResolvedValue({
+      metadata: { uid: 'dep-uid', resourceVersion: '10', generation: 2 },
       spec: { template: { metadata: { annotations: { existing: 'annotation' } } } }
     });
-    (k8sClient.apps.patchNamespacedDeployment as any).mockResolvedValue({ metadata: { name: 'test' } });
+    (k8sClient.apps.patchNamespacedDeployment as any).mockResolvedValue({ metadata: { name: 'test', uid: 'dep-uid', resourceVersion: '11', generation: 3 } });
 
     const result = await restartWorkloadTool.handler({
       kind: 'Deployment',
@@ -49,10 +50,14 @@ describe('Restart Workload Tool', () => {
     });
 
     expect(result.success).toBe(true);
+    expect(result).not.toHaveProperty('spec');
+    expect(result).not.toHaveProperty('status');
     expect(k8sClient.apps.patchNamespacedDeployment).toHaveBeenCalledWith({
       name: 'test',
       namespace: 'default',
       body: [
+        { op: 'test', path: '/metadata/uid', value: 'dep-uid' },
+        { op: 'test', path: '/metadata/resourceVersion', value: '10' },
         {
           op: 'add',
           path: '/spec/template/metadata/annotations',
@@ -60,6 +65,7 @@ describe('Restart Workload Tool', () => {
             existing: 'annotation',
             'acornops.dev/reason': 'testing',
             'acornops.dev/applied-by': 'cluster-cluster-1',
+            'acornops.dev/operation-id': expect.any(String),
             'kubectl.kubernetes.io/restartedAt': expect.any(String),
           }),
         },
@@ -69,48 +75,82 @@ describe('Restart Workload Tool', () => {
 
   it.each([
     [
-    'StatefulSet',
-    'readNamespacedStatefulSet',
-    'patchNamespacedStatefulSet',
-    'db',
+      'StatefulSet',
+      'readNamespacedStatefulSet',
+      'patchNamespacedStatefulSet',
+      'db',
     ],
     [
-    'DaemonSet',
-    'readNamespacedDaemonSet',
-    'patchNamespacedDaemonSet',
-    'agent',
+      'DaemonSet',
+      'readNamespacedDaemonSet',
+      'patchNamespacedDaemonSet',
+      'agent',
     ],
   ])('creates template metadata when restarting a %s without annotations', async (kind, readMethod, patchMethod, name) => {
     config.ACORNOPS_AGENT_WRITE_ENABLED = true;
     (k8sClient.apps[readMethod as 'readNamespacedStatefulSet'] as any).mockResolvedValue({
-    spec: { template: {} },
+      metadata: { uid: `${name}-uid`, resourceVersion: '20' },
+      spec: { template: {} },
     });
-    (k8sClient.apps[patchMethod as 'patchNamespacedStatefulSet'] as any).mockResolvedValue({ metadata: { name } });
+    (k8sClient.apps[patchMethod as 'patchNamespacedStatefulSet'] as any).mockResolvedValue({ metadata: { name, uid: `${name}-uid`, resourceVersion: '21' } });
 
     const result = await restartWorkloadTool.handler({
-    kind: kind as 'StatefulSet',
-    name,
-    namespace: 'default',
-    reason: 'testing',
+      kind: kind as 'StatefulSet',
+      name,
+      namespace: 'default',
+      reason: 'testing',
     });
 
-    expect(result).toEqual({ success: true, resource: { metadata: { name } } });
-    expect(k8sClient.apps[patchMethod as 'patchNamespacedStatefulSet']).toHaveBeenCalledWith({
-    name,
-    namespace: 'default',
-    body: [
-      {
-        op: 'add',
-        path: '/spec/template/metadata',
-        value: {
-          annotations: expect.objectContaining({
-            'acornops.dev/reason': 'testing',
-            'acornops.dev/applied-by': 'cluster-cluster-1',
-            'kubectl.kubernetes.io/restartedAt': expect.any(String),
-          }),
-        },
-      },
-    ],
+    expect(result).toMatchObject({
+      success: true,
+      operationId: expect.any(String),
+      target: { kind, namespace: 'default', name, uid: `${name}-uid` },
+      change: { type: 'restart', restartedAt: expect.any(String) },
+      observed: { resourceVersion: '21' },
     });
+    expect(k8sClient.apps[patchMethod as 'patchNamespacedStatefulSet']).toHaveBeenCalledWith({
+      name,
+      namespace: 'default',
+      body: [
+        { op: 'test', path: '/metadata/uid', value: `${name}-uid` },
+        { op: 'test', path: '/metadata/resourceVersion', value: '20' },
+        {
+          op: 'add',
+          path: '/spec/template/metadata',
+          value: {
+            annotations: expect.objectContaining({
+              'acornops.dev/reason': 'testing',
+              'acornops.dev/applied-by': 'cluster-cluster-1',
+              'kubectl.kubernetes.io/restartedAt': expect.any(String),
+            }),
+          },
+        },
+      ],
+    });
+  });
+
+  it('returns the existing receipt on an idempotent retry and rejects changed arguments', async () => {
+    config.ACORNOPS_AGENT_WRITE_ENABLED = true;
+    const current = {
+      metadata: { uid: 'dep-uid', resourceVersion: '10' },
+      spec: { template: { metadata: { annotations: {} } } },
+    };
+    vi.mocked(k8sClient.apps.readNamespacedDeployment).mockResolvedValue(current as never);
+    vi.mocked(k8sClient.apps.patchNamespacedDeployment).mockImplementation(async ({ body }: any) => ({
+      metadata: { uid: 'dep-uid', resourceVersion: '11' },
+      spec: { template: { metadata: { annotations: body[2].value } } },
+    }) as never);
+    const context = { operationId: 'operation-1', requestId: 1, sessionGeneration: 1 };
+    const params = { kind: 'Deployment' as const, name: 'api', namespace: 'default', reason: 'retry-safe restart' };
+
+    const first = await restartWorkloadTool.handler(params, context);
+    const patched = vi.mocked(k8sClient.apps.patchNamespacedDeployment).mock.results[0]!.value;
+    vi.mocked(k8sClient.apps.readNamespacedDeployment).mockResolvedValue(await patched as never);
+    const retried = await restartWorkloadTool.handler(params, context);
+
+    expect(retried).toEqual(first);
+    expect(k8sClient.apps.patchNamespacedDeployment).toHaveBeenCalledTimes(1);
+    await expect(restartWorkloadTool.handler({ ...params, reason: 'different reason' }, context))
+      .rejects.toMatchObject({ toolCode: 'PRECONDITION_FAILED' });
   });
 });

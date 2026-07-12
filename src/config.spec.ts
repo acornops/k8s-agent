@@ -27,7 +27,7 @@ describe('config', () => {
     vi.restoreAllMocks();
   });
 
-  it('filters excluded watch namespaces and derives leader defaults', async () => {
+  it('retains bounded watch intent while deriving leader defaults', async () => {
     setBaseEnv({
       ACORNOPS_AGENT_WATCH_NAMESPACES: 'default, kube-public,team-a',
       ACORNOPS_AGENT_POD_NAMESPACE: 'agents',
@@ -39,7 +39,7 @@ describe('config', () => {
     const { config, DEFAULT_EXCLUDED_NAMESPACES } = await importConfigModule();
 
     expect(DEFAULT_EXCLUDED_NAMESPACES).toEqual(['kube-node-lease', 'kube-public']);
-    expect(config.ACORNOPS_AGENT_WATCH_NAMESPACES).toEqual(['default', 'team-a']);
+    expect(config.ACORNOPS_AGENT_WATCH_NAMESPACES).toEqual(['default', 'kube-public', 'team-a']);
     expect(config.ACORNOPS_AGENT_LEASE_NAMESPACE).toBe('agents');
     expect(config.ACORNOPS_AGENT_LEADER_IDENTITY).toBe('pod-uid-1');
     expect(config.ACORNOPS_AGENT_POD_NAMESPACE).toBe('agents');

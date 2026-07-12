@@ -50,10 +50,14 @@ function isSensitiveFieldName(key: string): boolean {
   return SENSITIVE_KEY_PATTERN.test(key) || SENSITIVE_FIELD_FRAGMENTS.some((fragment) => normalized.includes(fragment));
 }
 
+export interface RedactionOptions {
+  preserveRootFields?: ReadonlySet<string>;
+}
+
 /** Recursively redact sensitive Kubernetes resource fields. */
-function redactValue(value: unknown, path: string[]): unknown {
+function redactValue(value: unknown, path: string[], options: RedactionOptions): unknown {
   if (Array.isArray(value)) {
-    return value.map((item) => redactValue(item, path));
+    return value.map((item) => redactValue(item, path, options));
   }
   if (!isPlainObject(value)) {
     return value;
@@ -72,18 +76,19 @@ function redactValue(value: unknown, path: string[]): unknown {
       output[key] = child.length > 0 ? [REDACTED] : [];
       continue;
     }
-    if (REDACT_FIELD_NAMES.has(key) || isSensitiveFieldName(key)) {
+    const preserve = path.length === 0 && options.preserveRootFields?.has(key);
+    if (!preserve && (REDACT_FIELD_NAMES.has(key) || isSensitiveFieldName(key))) {
       output[key] = redactAll(child);
       continue;
     }
-    output[key] = redactValue(child, [...path, key]);
+    output[key] = redactValue(child, [...path, key], options);
   }
   return output;
 }
 
 /** Return a copy of a Kubernetes resource with sensitive fields redacted. */
-export function redactKubernetesResource<T>(resource: T): T {
-  return redactValue(resource, []) as T;
+export function redactKubernetesResource<T>(resource: T, options: RedactionOptions = {}): T {
+  return redactValue(resource, [], options) as T;
 }
 
 export { REDACTED };

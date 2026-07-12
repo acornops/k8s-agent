@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { registerAllTools } from './index.js';
 import { toolRegistry } from './registry.js';
-import { applyRemediationTool } from './remediation/apply_remediation.js';
 import { getResourceLogsTool } from './atomic/get-resource-logs.js';
 import { getResourceTool } from './atomic/get-resource.js';
 import { listResourcesTool } from './atomic/list-resources.js';
@@ -21,6 +20,5 @@ describe('registerAllTools', () => {
     expect(registerSpy).toHaveBeenCalledWith(restartWorkloadTool);
     expect(registerSpy).toHaveBeenCalledWith(scaleWorkloadTool);
     expect(registerSpy).toHaveBeenCalledWith(simulatePatchTool);
-    expect(registerSpy).toHaveBeenCalledWith(applyRemediationTool);
   });
 });

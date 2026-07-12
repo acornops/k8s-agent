@@ -111,6 +111,17 @@ describe('E2E Agent Lifecycle', () => {
         workspaceId: 'workspace-e2e',
         targetId: process.env.ACORNOPS_CLUSTER_ID,
         targetType: 'kubernetes',
+        sessionPolicy: {
+          allowedTools: [
+            'list_resources',
+            'get_resource',
+            'get_resource_logs',
+            'restart_workload',
+            'scale_workload',
+            'simulate_patch',
+          ],
+          writeEnabled: false,
+        },
         config: {
           snapshotInterval: 10,
           maxSnapshotBytes: 1_000_000,
@@ -135,6 +146,8 @@ describe('E2E Agent Lifecycle', () => {
     );
     const listedTools = ((toolsListResponse.parsed?.result as { tools?: Array<{ name?: string }> })?.tools) || [];
     expect(listedTools.some((tool) => tool.name === 'list_resources')).toBe(true);
+    expect(listedTools).toHaveLength(6);
+    expect(listedTools.some((tool) => tool.name === 'apply_remediation')).toBe(false);
 
     connection.send(JSON.stringify({
       jsonrpc: '2.0',
@@ -142,25 +155,14 @@ describe('E2E Agent Lifecycle', () => {
       method: 'tools/call',
       params: {
         name: 'apply_remediation',
-        arguments: {
-          remediationId: 'remediation-e2e',
-          steps: [
-            {
-              tool: 'wait',
-              arguments: {
-                seconds: 0,
-              },
-            },
-          ],
-        },
+        arguments: {},
       },
     }));
     const toolsCallResponse = await waitForMessage(
       messages,
       (message) => !message.isBinary && message.parsed?.id === 'tools-call-1',
     );
-    expect((toolsCallResponse.parsed as { error?: unknown }).error).toBeUndefined();
-    expect((toolsCallResponse.parsed?.result as { remediationId?: string }).remediationId).toBe('remediation-e2e');
+    expect((toolsCallResponse.parsed as { error?: { code?: number } }).error?.code).toBe(-32601);
 
     connection.close();
     await waitForCondition(() => sockets.length >= expectedSocketsAfterReconnect, 30000);

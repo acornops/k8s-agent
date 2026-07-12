@@ -32,7 +32,8 @@ const getResourceLogs = read('src/tools/atomic/get-resource-logs.ts');
 const restartWorkload = read('src/tools/atomic/restart-workload.ts');
 const scaleWorkload = read('src/tools/atomic/scale.ts');
 const simulatePatch = read('src/tools/atomic/simulate-patch.ts');
-const applyRemediation = read('src/tools/remediation/apply_remediation.ts');
+const manualDeployment = read('deploy/deployment.yaml');
+const manualRbac = read('deploy/rbac.yaml');
 const controlPlaneContract = manifest.counterparts?.['control-plane'];
 
 expectIncludes(readme, '[`docs/contracts/README.md`](docs/contracts/README.md)', 'README contract link');
@@ -92,8 +93,7 @@ for (const [source, toolName] of [
   [getResourceLogs, 'get_resource_logs'],
   [restartWorkload, 'restart_workload'],
   [scaleWorkload, 'scale_workload'],
-  [simulatePatch, 'simulate_patch'],
-  [applyRemediation, 'apply_remediation']
+  [simulatePatch, 'simulate_patch']
 ]) {
   expectIncludes(doc, toolName, 'Builtin tool doc');
   expectIncludes(source, `name: '${toolName}'`, 'Builtin tool implementation');
@@ -112,6 +112,15 @@ for (const field of controlPlaneContract.toolCallRequestFields) {
   expectIncludes(doc, field, 'Tool call request doc');
   expectIncludes(router, field, 'Tool call request implementation');
 }
+
+expect(
+  /name: ACORNOPS_AGENT_WRITE_ENABLED\s+value: "false"/.test(manualDeployment),
+  'Manual deployment must remain explicitly read-only'
+);
+expect(
+  !/resources: \["deployments", "statefulsets", "daemonsets"\]\s+verbs: \["patch"\]/.test(manualRbac),
+  'Manual RBAC must not grant workload patch access'
+);
 
 if (failures.length > 0) {
   console.error('Contract checks failed:\n');

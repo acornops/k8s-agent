@@ -9,15 +9,11 @@ vi.mock('../config.js', () => ({
 }));
 
 vi.mock('../runtime/namespace-scope.js', () => ({
-  getNamespaceScope: vi.fn(() => ({
-    include: ['default', 'payments'],
-    exclude: ['sandbox'],
-  })),
   isNamespaceAllowed: vi.fn(() => true),
 }));
 
 import { config } from '../config.js';
-import { getNamespaceScope, isNamespaceAllowed } from '../runtime/namespace-scope.js';
+import { isNamespaceAllowed } from '../runtime/namespace-scope.js';
 import { checkNamespaceAllowed, checkWriteEnabled, getAnnotations } from './utils.js';
 
 describe('tool utils', () => {
@@ -39,10 +35,7 @@ describe('tool utils', () => {
 
     vi.mocked(isNamespaceAllowed).mockReturnValue(false);
 
-    expect(() => checkNamespaceAllowed('sandbox')).toThrow(
-      "Namespace 'sandbox' is outside the allowed namespace scope: default, payments. Excluded namespaces: sandbox.",
-    );
-    expect(getNamespaceScope).toHaveBeenCalledTimes(1);
+    expect(() => checkNamespaceAllowed('sandbox')).toThrow('Namespace is outside the allowed scope: sandbox');
   });
 
   it('builds remediation annotations from the non-secret cluster id', () => {

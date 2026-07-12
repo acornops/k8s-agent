@@ -444,6 +444,19 @@ describe('ResourceCollector', () => {
     })]);
   });
 
+  it('preserves cached node data when effective policy becomes namespace-scoped', async () => {
+    setNamespaceScope({ include: ['team-a'], exclude: [] });
+    const store = new WatchStore();
+    for (const kind of WATCH_RESOURCE_KINDS) store.replaceResourceKind(kind, [], '1');
+    store.replaceResourceKind('nodes', [{ metadata: { name: 'node-1', uid: 'node-uid' } }], '2');
+    store.replaceResourceKind('namespaces', [{ metadata: { name: 'team-a', uid: 'namespace-uid' } }], '2');
+
+    const result = await new ResourceCollector(store).collect();
+
+    expect(result.nodes).toEqual([expect.objectContaining({ name: 'node-1', uid: 'node-uid' })]);
+    expect(result.namespaces).toEqual([expect.objectContaining({ name: 'team-a' })]);
+  });
+
   it('falls back to list collection while the watch cache is not fully synced', async () => {
     const store = new WatchStore();
     store.replaceResourceKind('pods', [{ metadata: { name: 'cached-pod', namespace: 'default' } }], '1');

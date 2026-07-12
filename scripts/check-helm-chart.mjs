@@ -73,7 +73,7 @@ assertMatch(readOnly, /name: ACORNOPS_AGENT_WATCH_SNAPSHOT_DEBOUNCE_MS\s+value: 
 assertMatch(readOnly, /name: ACORNOPS_AGENT_WATCH_CACHE_SYNC_TIMEOUT_MS\s+value: "15000"/, 'watch sync timeout env should default 15000');
 assertMatch(readOnly, /name: ACORNOPS_AGENT_WATCH_TIMEOUT_SECONDS\s+value: "300"/, 'watch timeout env should default 300');
 assertIncludes(readOnly, 'fieldPath: metadata.uid', 'deployment should inject pod UID for leader identity');
-assertExcludes(readOnly, 'verbs: ["patch", "update"]', 'default RBAC must not include write verbs');
+assertExcludes(readOnly, 'verbs: ["patch"]', 'default RBAC must not include workload write verbs');
 assertExcludes(readOnly, 'resources: ["leases"]', 'default install should not grant Lease RBAC');
 assertIncludes(
   readOnly,
@@ -84,7 +84,10 @@ assertIncludes(readOnly, 'kind: Secret', 'default install should create the agen
 
 const writeEnabled = helmTemplate([...baseArgs, '--set', 'rbac.write.enabled=true']);
 assertMatch(writeEnabled, /name: ACORNOPS_AGENT_WRITE_ENABLED\s+value: "true"/, 'write env should follow rbac.write.enabled');
-assertIncludes(writeEnabled, 'verbs: ["patch", "update"]', 'write RBAC should be included only when enabled');
+assertIncludes(writeEnabled, 'resources: ["deployments", "statefulsets", "daemonsets"]', 'write RBAC should cover only supported workload parents');
+assertIncludes(writeEnabled, 'verbs: ["patch"]', 'write RBAC should grant only patch');
+assertExcludes(writeEnabled, 'deployments/scale', 'write RBAC should not grant scale subresources');
+assertExcludes(writeEnabled, 'verbs: ["patch", "update"]', 'write RBAC should not grant update');
 
 const existingSecret = helmTemplate([
   '--set-string',
@@ -113,6 +116,31 @@ assertIncludes(namespaceScoped, 'namespace: team-b', 'namespace-scoped install s
 assertExcludes(namespaceScoped, 'kind: ClusterRole', 'namespace-scoped install should avoid ClusterRole');
 assertExcludes(namespaceScoped, 'resources: ["pods", "pods/log", "services", "persistentvolumeclaims", "events", "nodes", "namespaces"]', 'namespace-scoped install should not grant cluster namespace discovery');
 assertIncludes(namespaceScoped, 'value: "team-a,team-b"', 'namespace include should set ACORNOPS_AGENT_WATCH_NAMESPACES');
+
+const namespaceWrite = helmTemplate([
+  ...baseArgs,
+  '--set-string',
+  'rbac.scope=namespace',
+  '--set-json',
+  'rbac.namespaces=["team-a"]',
+  '--set',
+  'rbac.write.enabled=true'
+]);
+assertExcludes(namespaceWrite, 'kind: ClusterRole', 'namespace write install should remain Role-scoped');
+assertIncludes(namespaceWrite, 'resources: ["deployments", "statefulsets", "daemonsets"]', 'namespace write RBAC should cover only workload parents');
+assertIncludes(namespaceWrite, 'verbs: ["patch"]', 'namespace write RBAC should grant patch');
+assertExcludes(namespaceWrite, 'deployments/scale', 'namespace write RBAC should not grant scale subresources');
+assertExcludes(namespaceWrite, 'verbs: ["patch", "update"]', 'namespace write RBAC should not grant update');
+
+const explicitScopeWins = helmTemplate([
+  ...baseArgs,
+  '--set-string',
+  'config.watchNamespaces=legacy',
+  '--set-json',
+  'namespaceScope.include=["team-a"]'
+]);
+assertIncludes(explicitScopeWins, 'value: "team-a"', 'namespaceScope.include should be the local maximum when explicitly configured');
+assertExcludes(explicitScopeWins, 'value: "legacy"', 'legacy watch namespaces should not override explicit namespaceScope.include');
 
 const explicitWebsocket = helmTemplate([
   '--set-string',

@@ -1,7 +1,7 @@
 import { k8sClient } from './client.js';
 import pino from 'pino';
 import { config } from '../config.js';
-import { filterNamespaceItems } from '../runtime/namespace-scope.js';
+import { filterNamespaceItems, getWatchNamespaces } from '../runtime/namespace-scope.js';
 import { withK8sApiLimit } from './api-limiter.js';
 import { listAllPages } from './pagination.js';
 
@@ -69,12 +69,22 @@ export async function checkMetricsApi(): Promise<boolean> {
 /** Probe the metrics API directly without cache coordination. */
 async function probeMetricsApi(): Promise<boolean> {
   try {
-    const res = await withK8sApiLimit(() => k8sClient.customObjects.listClusterCustomObject({
+    const namespaces = getWatchNamespaces();
+    if (namespaces?.length === 0) return true;
+    const res = await withK8sApiLimit(() => namespaces
+      ? k8sClient.customObjects.listNamespacedCustomObject({
+        group: 'metrics.k8s.io',
+        version: 'v1beta1',
+        namespace: namespaces[0]!,
+        plural: 'pods',
+        limit: 1,
+      })
+      : k8sClient.customObjects.listClusterCustomObject({
         group: 'metrics.k8s.io',
         version: 'v1beta1',
         plural: 'pods',
         limit: 1,
-    }));
+      }));
     return !!res;
   } catch (err) {
     logger.debug({ err }, 'Metrics API not available');

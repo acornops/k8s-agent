@@ -1,6 +1,18 @@
 import { z } from 'zod';
+import { isKubernetesDnsLabel } from './k8s/names.js';
 
 export const DEFAULT_EXCLUDED_NAMESPACES = ['kube-node-lease', 'kube-public'];
+
+/** Parse and validate a comma-separated Kubernetes namespace environment value. */
+function parseNamespaceList(value: string | undefined, ctx: z.RefinementCtx): string[] {
+  const namespaces = [...new Set((value || '').split(',').map((item) => item.trim()).filter(Boolean))];
+  for (const namespace of namespaces) {
+    if (!isKubernetesDnsLabel(namespace)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Invalid Kubernetes namespace: ${namespace}` });
+    }
+  }
+  return namespaces;
+}
 
 const configSchema = z.object({
   ACORNOPS_AGENT_PLATFORM_URL: z.string().url(),
@@ -13,15 +25,23 @@ const configSchema = z.object({
   ACORNOPS_AGENT_KUBECONFIG_SKIP_TLS_VERIFY: z.string().optional().default('false').transform(val => val === 'true'),
   ACORNOPS_AGENT_K8S_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(8),
   ACORNOPS_AGENT_K8S_LIST_PAGE_LIMIT: z.coerce.number().int().min(1).max(1000).default(500),
+  ACORNOPS_AGENT_TOOL_READ_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(4),
+  ACORNOPS_AGENT_TOOL_WRITE_CONCURRENCY: z.coerce.number().int().min(1).max(1).default(1),
+  ACORNOPS_AGENT_TOOL_QUEUE_LIMIT: z.coerce.number().int().min(0).max(16).default(16),
+  ACORNOPS_AGENT_TOOL_MAX_INPUT_BYTES: z.coerce.number().int().min(1024).max(1024 * 1024).default(1024 * 1024),
+  ACORNOPS_AGENT_TOOL_MAX_OUTPUT_BYTES: z.coerce.number().int().min(1024).max(2 * 1024 * 1024).default(2 * 1024 * 1024),
+  ACORNOPS_AGENT_SCALE_MAX_REPLICAS: z.coerce.number().int().min(1).max(100).default(100),
+  ACORNOPS_AGENT_ALLOW_SCALE_TO_ZERO: z.string().optional().default('false').transform(val => val === 'true'),
+  ACORNOPS_AGENT_RBAC_SCOPE: z.enum(['cluster', 'namespace']).default('cluster'),
   ACORNOPS_AGENT_WATCH_CACHE_ENABLED: z.string().optional().default('true').transform(val => val === 'true'),
   ACORNOPS_AGENT_WATCH_SNAPSHOT_DEBOUNCE_MS: z.coerce.number().int().min(0).max(60000).default(5000),
   ACORNOPS_AGENT_WATCH_CACHE_SYNC_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
   ACORNOPS_AGENT_WATCH_TIMEOUT_SECONDS: z.coerce.number().int().min(30).max(1800).default(300),
-  ACORNOPS_AGENT_WATCH_NAMESPACES: z.string().optional().transform(val => {
-    if (!val) return undefined;
-    const namespaces = val.split(',').map(s => s.trim());
-    return namespaces.filter(ns => !DEFAULT_EXCLUDED_NAMESPACES.includes(ns));
+  ACORNOPS_AGENT_WATCH_NAMESPACES: z.string().optional().transform((val, ctx) => {
+    const namespaces = parseNamespaceList(val, ctx);
+    return namespaces.length > 0 ? namespaces : undefined;
   }),
+  ACORNOPS_AGENT_EXCLUDE_NAMESPACES: z.string().optional().default('').transform(parseNamespaceList),
   ACORNOPS_AGENT_WRITE_ENABLED: z.string().optional().default('false').transform(val => val === 'true'),
   ACORNOPS_AGENT_LOCAL_FALLBACK_ENABLED: z.string().optional().default('false').transform(val => val === 'true'),
   ACORNOPS_AGENT_LOG_LEVEL: z.enum(['info', 'debug', 'error', 'trace', 'warn']).default('info'),

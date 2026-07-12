@@ -3,7 +3,7 @@ import pino from 'pino';
 import { config } from '../../config.js';
 import { k8sClient } from '../../k8s/client.js';
 import { ListPageOptions, listAllPagesWithMetadata } from '../../k8s/pagination.js';
-import { getWatchNamespaces } from '../../runtime/namespace-scope.js';
+import { canAccessClusterScopedKind, getWatchNamespaces } from '../../runtime/namespace-scope.js';
 import { WatchResourceKind, WatchStore } from './watch-store.js';
 
 const logger = pino({ level: config.ACORNOPS_AGENT_LOG_LEVEL }).child({ module: 'watch-manager' });
@@ -218,6 +218,10 @@ export class WatchManager {
   private async syncResourceDescriptor(descriptor: ResourceDescriptor, generation: number, attempts = 0): Promise<void> {
     this.store.markSyncing(descriptor.kind);
     try {
+      if (descriptor.kind === 'namespaces' && !canAccessClusterScopedKind('Namespace')) {
+        this.store.replaceResourceKind(descriptor.kind, []);
+        return;
+      }
       const namespaces = descriptor.namespaced ? getWatchNamespaces() : undefined;
       if (descriptor.namespaced && namespaces) {
         const results = await Promise.all(namespaces.map(async (namespace) => ({

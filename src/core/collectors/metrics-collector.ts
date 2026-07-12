@@ -2,7 +2,7 @@ import os from 'node:os';
 import { getPodMetrics, getNodeMetrics, checkMetricsApi } from '../../k8s/metrics.js';
 import { Collector } from '../../types/collector.js';
 import { config } from '../../config.js';
-import { getWatchNamespaces } from '../../runtime/namespace-scope.js';
+import { getWatchNamespaces, isNamespaceAllowed } from '../../runtime/namespace-scope.js';
 
 /**
  * Collector responsible for fetching CPU and Memory usage metrics from the metrics-server.
@@ -52,7 +52,7 @@ export class MetricsCollector implements Collector {
 
     return {
       available: true,
-      pods: podMetrics,
+      pods: podMetrics.filter((item) => isNamespaceAllowed(item.namespace)),
       nodes: nodeMetrics,
     };
   }

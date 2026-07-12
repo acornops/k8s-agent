@@ -71,6 +71,9 @@ Handshake success response must include:
 - `config.namespaceScope.exclude`
 
 The agent must reject a handshake response whose `targetId` differs from its configured Kubernetes target id or whose `targetType` is not `kubernetes`.
+The agent must also reject a handshake response with a missing or malformed
+`sessionPolicy`. Tool discovery and execution remain unavailable until a valid
+policy is installed for the current connection generation.
 
 The agent must honor `config.maxSnapshotBytes` as a compressed-payload ceiling for `notify/snapshot`.
 The agent must honor `config.namespaceScope` at handshake and `config/update_namespace_scope` requests at runtime. Namespace scope updates apply to collectors and namespace-guarded tools without restarting the agent.
@@ -83,7 +86,6 @@ Current control-plane-expected builtin tool names:
 - `restart_workload`
 - `scale_workload`
 - `simulate_patch`
-- `apply_remediation`
 
 ### Agent -> control plane notifications
 
@@ -143,3 +145,11 @@ The control plane can issue:
 - `arguments`
 
 The tool implementation remains local to the agent, but the advertised schemas are consumed by control plane and then propagated to llm-gateway and execution-engine as part of the platform contract.
+
+`restart_workload` and `scale_workload` return minimal mutation receipts with
+`operationId`, target identity, requested change, and observed resource version;
+they do not return full Kubernetes workload objects.
+The execution engine's tool call ID is preserved through llm-gateway and the
+control plane as the AgentK JSON-RPC request ID, allowing a same-connection retry
+to derive the same operation ID. A reused operation ID with different validated
+arguments is rejected.

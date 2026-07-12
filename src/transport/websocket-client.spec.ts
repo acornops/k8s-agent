@@ -55,6 +55,7 @@ vi.mock('../config.js', () => ({
   config: {
     ACORNOPS_AGENT_LOG_LEVEL: 'info',
     ACORNOPS_AGENT_KEY: 'agent-key',
+    ACORNOPS_AGENT_TOOL_MAX_INPUT_BYTES: 1024 * 1024,
     AGENT_VERSION: '1.2.3',
   },
 }));
@@ -88,6 +89,7 @@ describe('WebSocketClient', () => {
     expect(socketInstances).toHaveLength(1);
     expect(socketInstances[0]?.url).toBe('wss://platform.example/ws');
     expect(socketInstances[0]?.options).toEqual({
+      maxPayload: 1024 * 1024,
       headers: {
         'x-agent-key': 'agent-key',
         'x-agent-version': '1.2.3',
