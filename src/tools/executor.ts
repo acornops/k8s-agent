@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../config.js';
 import { canAccessClusterScopedKind, isNamespaceAllowed } from '../runtime/namespace-scope.js';
 import { redactKubernetesResource } from './resource-redaction.js';
-import { isKubernetesPreconditionFailure, ToolExecutionError } from './errors.js';
+import { isKubernetesPreconditionFailure, mapKubernetesError, ToolExecutionError } from './errors.js';
 import { ToolCapability, ToolDefinition, toolRegistry } from './registry.js';
 
 export interface ToolSessionPolicy {
@@ -217,6 +217,8 @@ export class ToolExecutor {
       if (isKubernetesPreconditionFailure(err)) {
         throw new ToolExecutionError('PRECONDITION_FAILED', 'Kubernetes resource precondition failed');
       }
+      const mappedError = mapKubernetesError(err, parsed.data);
+      if (mappedError) throw mappedError;
       throw new ToolExecutionError('KUBERNETES_ERROR', 'Kubernetes operation failed');
     } finally {
       if (timer) clearTimeout(timer);

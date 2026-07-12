@@ -146,6 +146,17 @@ The control plane can issue:
 
 The tool implementation remains local to the agent, but the advertised schemas are consumed by control plane and then propagated to llm-gateway and execution-engine as part of the platform contract.
 
+`get_resource` requires the exact Kubernetes kind, name, and namespace. Callers
+must not infer an owning workload name from a Pod name; they should use
+`ownerReferences` or list the candidate workload kind. Before calling
+`patch_resource`, callers use `get_resource` to obtain the exact container name,
+current image, and `metadata.uid` required by the guarded patch schema.
+
+Common Kubernetes client failures cross the tool boundary as sanitized stable
+codes: `RESOURCE_NOT_FOUND`, `KUBERNETES_FORBIDDEN`, `KUBERNETES_TIMEOUT`, and
+`KUBERNETES_UNAVAILABLE`. Error data may contain HTTP status, stable reason, and
+the requested kind/name/namespace, but never the raw Kubernetes response body.
+
 `restart_workload`, `scale_workload`, and `patch_resource` return minimal mutation receipts with
 `operationId`, target identity, requested change, and observed resource version;
 they do not return full Kubernetes workload objects.

@@ -511,7 +511,7 @@ export async function patchResourceHandler(request: PatchResourceRequest, contex
 
 export const patchResourceTool: ToolDefinition = {
   name: 'patch_resource',
-  description: 'Apply bounded semantic image, label, annotation, or explicitly enabled Service selector changes to one existing resource.',
+  description: 'Apply bounded semantic changes to one existing resource after reading it with get_resource. Supply the exact kind/name/namespace, metadata.uid as expected_uid, and current values as operation preconditions. For set_image, use the exact container name, container_type, and current image returned by get_resource; patch the owning workload such as a Deployment, never its generated Pod. Supports image, label, annotation, and explicitly enabled Service selector changes.',
   capability: 'write',
   timeoutMs: 20000,
   version: 'v1',

@@ -270,6 +270,50 @@ describe('ToolExecutor', () => {
     })).rejects.toMatchObject({ toolCode: 'PRECONDITION_FAILED' });
   });
 
+  it.each([
+    [404, undefined, 'RESOURCE_NOT_FOUND', 'NotFound'],
+    [403, undefined, 'KUBERNETES_FORBIDDEN', 'Forbidden'],
+    [408, undefined, 'KUBERNETES_TIMEOUT', 'Timeout'],
+    [503, undefined, 'KUBERNETES_UNAVAILABLE', 'Unavailable'],
+    [undefined, 'ECONNREFUSED', 'KUBERNETES_UNAVAILABLE', 'Unavailable'],
+  ])('maps Kubernetes status %s and code %s to %s with sanitized resource context', async (
+    statusCode,
+    code,
+    toolCode,
+    reason,
+  ) => {
+    toolRegistry.register({
+      name: 'resource_read',
+      description: 'read',
+      capability: 'read',
+      timeoutMs: 1000,
+      version: 'v1',
+      schema: z.object({ kind: z.string(), name: z.string(), namespace: z.string() }).strict(),
+      scopeResolver: (args) => ({ type: 'namespaced', namespace: args.namespace }),
+      handler: async () => {
+        throw Object.assign(new Error('raw client details must not cross the boundary'), {
+          ...(statusCode === undefined ? {} : { statusCode }),
+          ...(code === undefined ? {} : { code }),
+        });
+      },
+    });
+
+    await expect(toolExecutor.execute({
+      name: 'resource_read',
+      arguments: { kind: 'Deployment', name: 'missing-api', namespace: 'demo' },
+      requestId: `mapped-${String(statusCode)}-${String(code)}`,
+      policy: { allowedTools: new Set(['resource_read']), writeEnabled: false, generation: 1 },
+    })).rejects.toMatchObject({
+      toolCode,
+      data: {
+        reason,
+        kind: 'Deployment',
+        name: 'missing-api',
+        namespace: 'demo',
+      },
+    });
+  });
+
   it('preserves protocol continuation cursors while redacting sensitive result fields', async () => {
     toolRegistry.register({
       name: 'list_resources',

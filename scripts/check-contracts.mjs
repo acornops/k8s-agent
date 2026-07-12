@@ -99,6 +99,14 @@ for (const [source, toolName] of [
   expectIncludes(source, `name: '${toolName}'`, 'Builtin tool implementation');
 }
 
+expectIncludes(getResource, 'Do not infer a workload name', 'get_resource exact-name guidance');
+expectIncludes(getResource, 'metadata.uid', 'get_resource guarded patch guidance');
+expectIncludes(patchResource, 'after reading it with get_resource', 'patch_resource prerequisite read guidance');
+expectIncludes(patchResource, 'patch the owning workload', 'patch_resource workload targeting guidance');
+for (const code of ['RESOURCE_NOT_FOUND', 'KUBERNETES_FORBIDDEN', 'KUBERNETES_TIMEOUT', 'KUBERNETES_UNAVAILABLE']) {
+  expectIncludes(doc, code, 'Sanitized Kubernetes tool error contract');
+}
+
 for (const field of controlPlaneContract.snapshotFields) {
   expectIncludes(doc, field, 'Snapshot field doc');
 }

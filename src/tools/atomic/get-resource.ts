@@ -70,7 +70,7 @@ async function handler(params: z.infer<typeof schema>) {
 
 export const getResourceTool: ToolDefinition = {
   name: 'get_resource',
-  description: 'Fetch a redacted Kubernetes API object for a specific named resource.',
+  description: 'Fetch one redacted Kubernetes API object by its exact kind, name, and namespace. Do not infer a workload name from a Pod or namespace: use ownerReferences from the Pod and intermediate controller, or list the candidate kind first. Use this read before patch_resource to obtain metadata.uid, the exact container name, and the current image.',
   capability: 'read',
   timeoutMs: 12000,
   version: 'v1',
