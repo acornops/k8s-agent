@@ -1,4 +1,9 @@
 {{- $platformAdditionalCaEnabled := include "acornops-agent.platformAdditionalCaEnabled" . -}}
+{{- $platformAdditionalCaInlinePem := default "" .Values.config.tls.additionalCaBundle.inlinePem -}}
+{{- $podAnnotations := deepCopy (default dict .Values.podAnnotations) -}}
+{{- if $platformAdditionalCaInlinePem -}}
+{{- $_ := set $podAnnotations "checksum/platform-additional-ca" ($platformAdditionalCaInlinePem | sha256sum) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,7 +32,7 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -146,6 +151,15 @@ spec:
               value: {{ .Chart.AppVersion | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if $platformAdditionalCaInlinePem }}
+      volumes:
+        - name: platform-additional-ca
+          configMap:
+            name: {{ include "acornops-agent.platformAdditionalCaConfigMapName" . | quote }}
+            items:
+              - key: ca.crt
+                path: platform-ca.pem
+      {{- else }}
       {{- with .Values.config.tls.additionalCaBundle.configMapKeyRef }}
       volumes:
         - name: platform-additional-ca
@@ -163,6 +177,7 @@ spec:
             items:
               - key: {{ .key | quote }}
                 path: platform-ca.pem
+      {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -39,8 +39,10 @@ kubectl -n acornops logs -f deployment/acornops-agent
 ### Additional platform CA trust
 
 When the platform WebSocket certificate uses an organization-private CA,
-publish a PEM CA bundle as a ConfigMap or Secret in the AgentK release namespace
-of each workload cluster. Configure one source:
+either pass a public PEM bundle with
+`--set-file config.tls.additionalCaBundle.inlinePem=/path/to/ca.pem`, or publish
+it as a ConfigMap or Secret in the AgentK release namespace of each workload
+cluster. Configure one source:
 
 ```yaml
 config:
@@ -68,6 +70,8 @@ Node.js reads the bundle only at startup, and the `subPath` mount does not
 refresh inside an existing container. Rotate with an overlap: publish old and
 new roots, restart AgentK, rotate the platform certificate, verify WebSocket
 handshake/heartbeats/snapshots, remove the old root, and restart AgentK again.
+An upgrade that changes chart-managed inline PEM content rolls the Deployment
+automatically; externally managed ConfigMaps and Secrets do not.
 
 ```bash
 kubectl -n acornops rollout restart deployment/<agentk-deployment>

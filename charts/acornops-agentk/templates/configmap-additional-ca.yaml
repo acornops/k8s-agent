@@ -1,0 +1,13 @@
+{{- $inlinePem := default "" .Values.config.tls.additionalCaBundle.inlinePem -}}
+{{- if ne (trim $inlinePem) "" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "acornops-agent.platformAdditionalCaConfigMapName" $ }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "acornops-agent.labels" $ | nindent 4 }}
+data:
+  ca.crt: |-
+    {{- $inlinePem | nindent 4 }}
+{{- end }}

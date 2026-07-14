@@ -77,6 +77,10 @@ const secretCaArgs = [
   '--set-string',
   `${additionalCaValuesPath}.secretKeyRef.key=secret-ca.pem`
 ];
+const inlineCaArgs = [
+  '--set-file',
+  `${additionalCaValuesPath}.inlinePem=test/fixtures/organization-ca.pem`
+];
 
 const readOnly = helmTemplate(baseArgs);
 assertIncludes(
@@ -146,6 +150,51 @@ assertMatch(
   'Secret CA should map the configured resource key to the fixed filename'
 );
 assertExcludes(secretCa, 'optional:', 'Secret CA source should fail closed when the resource or key is missing');
+
+const inlineCa = helmTemplate([...baseArgs, ...inlineCaArgs]);
+assertMatch(
+  inlineCa,
+  /kind: ConfigMap\s+metadata:\s+name: acornops-agent-platform-ca[\s\S]*ca\.crt: \|-\s+-----BEGIN CERTIFICATE-----/,
+  'inline CA should render a chart-managed ConfigMap'
+);
+assertMatch(
+  inlineCa,
+  /name: platform-additional-ca\s+configMap:\s+name: "acornops-agent-platform-ca"\s+items:\s+- key: ca\.crt\s+path: platform-ca\.pem/,
+  'inline CA should mount the chart-managed ConfigMap'
+);
+assertMatch(
+  inlineCa,
+  /checksum\/platform-additional-ca: [a-f0-9]{64}/,
+  'inline CA should restart AgentK when the managed bundle changes'
+);
+assertMatch(
+  inlineCa,
+  new RegExp(`name: NODE_EXTRA_CA_CERTS\\s+value: "${additionalCaPath}"`),
+  'inline CA should configure Node.js with the fixed path'
+);
+assertExcludes(inlineCa, 'BEGIN PRIVATE KEY', 'inline CA must not contain private key material');
+
+const inlineCaWithAnnotations = helmTemplate([
+  ...baseArgs,
+  ...inlineCaArgs,
+  '--set-json',
+  'podAnnotations={"checksum/platform-additional-ca":"override","example.com/custom":"preserved"}'
+]);
+assertExcludes(
+  inlineCaWithAnnotations,
+  'checksum/platform-additional-ca: override',
+  'chart-owned inline CA checksum should override a conflicting pod annotation'
+);
+assertMatch(
+  inlineCaWithAnnotations,
+  /checksum\/platform-additional-ca: [a-f0-9]{64}/,
+  'chart-owned inline CA checksum should remain authoritative'
+);
+assertIncludes(
+  inlineCaWithAnnotations,
+  'example.com/custom: preserved',
+  'inline CA checksum handling should preserve unrelated pod annotations'
+);
 
 for (const caRender of [configMapCa, secretCa]) {
   assertExcludes(caRender, 'NODE_TLS_REJECT_UNAUTHORIZED', 'additional CA trust must preserve TLS verification');
@@ -294,6 +343,8 @@ expectFailure([...baseArgs, '--set', 'leaderElection.retryPeriodMs=11000'], 'lea
 
 for (const [args, message] of [
   [[...configMapCaArgs, ...secretCaArgs], 'ConfigMap and Secret CA sources should be mutually exclusive'],
+  [[...inlineCaArgs, ...configMapCaArgs], 'inline and ConfigMap CA sources should be mutually exclusive'],
+  [[...inlineCaArgs, ...secretCaArgs], 'inline and Secret CA sources should be mutually exclusive'],
   [[
     '--set-string',
     `${additionalCaValuesPath}.configMapKeyRef.key=ca.crt`
@@ -335,7 +386,8 @@ for (const [args, message] of [
     `${additionalCaValuesPath}.secretKeyRef.key=`
   ], 'Secret CA source should reject an empty key'],
   [[...configMapCaArgs, '--set-string', `${additionalCaValuesPath}.configMapKeyRef.namespace=other`], 'cross-namespace CA fields should be rejected'],
-  [['--set-string', `${additionalCaValuesPath}.inlinePem=unsupported`], 'inline PEM fields should be rejected'],
+  [['--set-string', `${additionalCaValuesPath}.inlinePem=not-a-certificate`], 'inline CA should require PEM certificate material'],
+  [['--set-string', `${additionalCaValuesPath}.inlinePem=-----BEGIN PRIVATE KEY-----`], 'inline CA should reject private key material'],
   [['--set', 'config.tls.skipTlsVerify=true'], 'TLS verification bypass fields should be rejected']
 ]) {
   expectAnyFailure([...baseArgs, ...args], message);
@@ -343,7 +395,11 @@ for (const [args, message] of [
 
 expectFailure(
   ['--skip-schema-validation', ...baseArgs, ...configMapCaArgs, ...secretCaArgs],
-  'config.tls.additionalCaBundle must configure only one of configMapKeyRef or secretKeyRef'
+  'config.tls.additionalCaBundle must configure only one of inlinePem, configMapKeyRef, or secretKeyRef'
+);
+expectFailure(
+  ['--skip-schema-validation', ...baseArgs, ...inlineCaArgs, ...configMapCaArgs],
+  'config.tls.additionalCaBundle must configure only one of inlinePem, configMapKeyRef, or secretKeyRef'
 );
 expectFailure(
   [

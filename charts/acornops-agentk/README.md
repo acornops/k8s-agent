@@ -30,16 +30,31 @@ helm upgrade --install acornops-agent oci://ghcr.io/acornops/charts/acornops-age
 
 Use `config.tls.additionalCaBundle` when AgentK must connect to a platform whose
 WebSocket certificate chains to an organization-private CA. The chart
-references an existing ConfigMap or Secret in the Helm release namespace; it
-does not create or copy the resource, and Kubernetes cannot mount a resource
-from another namespace. Prefer a ConfigMap because CA certificates are public
-trust anchors. Secret support accommodates PKI systems that distribute trust
-material as Secrets.
+can create a managed ConfigMap from a PEM file supplied with Helm, or reference
+an existing ConfigMap or Secret in the Helm release namespace. Kubernetes
+cannot mount a resource from another namespace. Prefer a ConfigMap because CA
+certificates are public trust anchors. Secret support accommodates PKI systems
+that distribute trust material as Secrets.
 
 The selected key must contain one or more PEM-encoded CA certificates. Use a
 root CA or an intentionally managed CA bundle, not a server private key, client
-certificate/private-key pair, or frequently replaced leaf certificate. Inline
-PEM values are not supported.
+certificate/private-key pair, or frequently replaced leaf certificate.
+
+Chart-managed ConfigMap source:
+
+```bash
+helm upgrade --install acornops-agent oci://ghcr.io/acornops/charts/acornops-agentk \
+  --namespace acornops \
+  --create-namespace \
+  --set-file config.tls.additionalCaBundle.inlinePem=/path/to/organization-ca.pem \
+  --set-string config.platformUrl=https://api.acornops.example \
+  --set-string config.clusterId=YOUR_CLUSTER_ID \
+  --set-string config.agentKey=YOUR_AGENT_KEY
+```
+
+`--set-file` reads the PEM on the machine running Helm. The CA becomes part of
+the Helm release values and rendered ConfigMap, so use this only for public CA
+certificates. The chart rejects private-key material.
 
 ConfigMap source:
 
@@ -65,10 +80,11 @@ config:
         key: ca.crt
 ```
 
-Configure exactly one source. Both `name` and `key` are required. When neither
-source is configured, the chart renders no additional CA volume, mount, or
-environment variable. When one is configured, the AgentK container receives a
-read-only `platform-additional-ca` volume at
+Configure exactly one of `inlinePem`, `configMapKeyRef`, or `secretKeyRef`.
+Both reference `name` and `key` fields are required. When no source is
+configured, the chart renders no additional CA volume, mount, or environment
+variable. When one is configured, the AgentK container receives a read-only
+`platform-additional-ca` volume at
 `/etc/acornops/trust/platform-ca.pem` and chart-owned
 `NODE_EXTRA_CA_CERTS=/etc/acornops/trust/platform-ca.pem`.
 
@@ -90,7 +106,9 @@ namespace that needs it.
 
 Node.js reads `NODE_EXTRA_CA_CERTS` only at process startup, and the file uses a
 `subPath` mount. Updating the source does not update trust in an existing
-AgentK container. Rotate with an overlap:
+AgentK container. Helm automatically rolls the Deployment when chart-managed
+inline PEM content changes. Existing ConfigMap and Secret sources still require
+an explicit restart. Rotate with an overlap:
 
 1. Publish a bundle containing both old and new CA roots.
 2. Restart AgentK in each workload cluster.

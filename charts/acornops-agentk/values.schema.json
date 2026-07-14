@@ -30,6 +30,7 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
+                "inlinePem": { "type": "string" },
                 "configMapKeyRef": {
                   "oneOf": [
                     { "type": "null" },
@@ -65,6 +66,24 @@
                     "required": ["configMapKeyRef", "secretKeyRef"],
                     "properties": {
                       "configMapKeyRef": { "type": "object" },
+                      "secretKeyRef": { "type": "object" }
+                    }
+                  }
+                },
+                {
+                  "not": {
+                    "required": ["inlinePem", "configMapKeyRef"],
+                    "properties": {
+                      "inlinePem": { "type": "string", "minLength": 1 },
+                      "configMapKeyRef": { "type": "object" }
+                    }
+                  }
+                },
+                {
+                  "not": {
+                    "required": ["inlinePem", "secretKeyRef"],
+                    "properties": {
+                      "inlinePem": { "type": "string", "minLength": 1 },
                       "secretKeyRef": { "type": "object" }
                     }
                   }

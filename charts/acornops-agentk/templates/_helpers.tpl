@@ -86,14 +86,24 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/* Validate and report whether an additional platform CA bundle is configured. */}}
 {{- define "acornops-agent.platformAdditionalCaEnabled" -}}
 {{- $bundle := .Values.config.tls.additionalCaBundle -}}
+{{- $inlinePem := default "" $bundle.inlinePem -}}
 {{- $configMapRef := $bundle.configMapKeyRef -}}
 {{- $secretKeyRef := $bundle.secretKeyRef -}}
+{{- $hasInlinePem := ne (trim $inlinePem) "" -}}
 {{- $hasConfigMapRef := kindIs "map" $configMapRef -}}
 {{- $hasSecretKeyRef := kindIs "map" $secretKeyRef -}}
-{{- if and $hasConfigMapRef $hasSecretKeyRef -}}
-{{- fail "config.tls.additionalCaBundle must configure only one of configMapKeyRef or secretKeyRef" -}}
+{{- if or (and $hasConfigMapRef $hasSecretKeyRef) (and $hasInlinePem (or $hasConfigMapRef $hasSecretKeyRef)) -}}
+{{- fail "config.tls.additionalCaBundle must configure only one of inlinePem, configMapKeyRef, or secretKeyRef" -}}
 {{- end -}}
-{{- if $hasConfigMapRef -}}
+{{- if $hasInlinePem -}}
+{{- if contains "PRIVATE KEY-----" $inlinePem -}}
+{{- fail "config.tls.additionalCaBundle.inlinePem must not contain private key material" -}}
+{{- end -}}
+{{- if or (not (contains "-----BEGIN CERTIFICATE-----" $inlinePem)) (not (contains "-----END CERTIFICATE-----" $inlinePem)) -}}
+{{- fail "config.tls.additionalCaBundle.inlinePem must contain one or more PEM certificates" -}}
+{{- end -}}
+true
+{{- else if $hasConfigMapRef -}}
 {{- $_ := required "config.tls.additionalCaBundle.configMapKeyRef.name is required when configMapKeyRef is configured" $configMapRef.name -}}
 {{- $_ := required "config.tls.additionalCaBundle.configMapKeyRef.key is required when configMapKeyRef is configured" $configMapRef.key -}}
 true
@@ -102,6 +112,11 @@ true
 {{- $_ := required "config.tls.additionalCaBundle.secretKeyRef.key is required when secretKeyRef is configured" $secretKeyRef.key -}}
 true
 {{- end -}}
+{{- end -}}
+
+{{/* Name of the chart-managed ConfigMap used for an inline additional CA. */}}
+{{- define "acornops-agent.platformAdditionalCaConfigMapName" -}}
+{{- printf "%s-platform-ca" (include "acornops-agent.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/* Fixed file path consumed by Node.js for additional platform CA trust. */}}

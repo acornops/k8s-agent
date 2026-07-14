@@ -37,6 +37,9 @@ config:
     # Optional namespace-local CA bundle used to extend Node.js trust for the
     # platform WebSocket connection.
     additionalCaBundle:
+      # PEM bundle supplied with Helm --set-file. The chart creates and manages
+      # a namespace-local ConfigMap for this source.
+      inlinePem: ""
       configMapKeyRef: null
       secretKeyRef: null
   # Control-plane cluster identifier issued during cluster registration.
