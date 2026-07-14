@@ -12,6 +12,7 @@ vi.mock('../../k8s/client.js', () => ({
     },
     apps: {
       readNamespacedDeployment: vi.fn(),
+      readNamespacedReplicaSet: vi.fn(),
       readNamespacedStatefulSet: vi.fn(),
       readNamespacedDaemonSet: vi.fn(),
     },
@@ -64,7 +65,7 @@ describe('getResourceTool', () => {
         name: 'api',
         namespace: 'default',
       }),
-    ).resolves.toEqual(resource);
+    ).resolves.toMatchObject({ resource });
 
     expect(method).toHaveBeenCalledWith(expectedArgs);
   });
@@ -80,7 +81,7 @@ describe('getResourceTool', () => {
         kind: 'Node',
         name: 'worker-1',
       })
-    ).resolves.toEqual(node);
+    ).resolves.toEqual({ resource: node });
 
     expect(k8sClient.core.readNode).toHaveBeenCalledWith({ name: 'worker-1' });
 
@@ -89,9 +90,276 @@ describe('getResourceTool', () => {
         kind: 'Namespace',
         name: 'payments',
       }),
-    ).resolves.toEqual(namespace);
+    ).resolves.toEqual({ resource: namespace });
 
     expect(k8sClient.core.readNamespace).toHaveBeenCalledWith({ name: 'payments' });
+  });
+
+  it('resolves a Pod through its ReplicaSet to exact Deployment patch prerequisites', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: {
+        name: 'acornops-demo-unhealthy-abc',
+        namespace: 'acornops-demo',
+        ownerReferences: [{ kind: 'ReplicaSet', name: 'acornops-demo-unhealthy-rs', uid: 'rs-uid', controller: true }],
+      },
+    } as never);
+    vi.mocked(k8sClient.apps.readNamespacedReplicaSet).mockResolvedValue({
+      metadata: {
+        name: 'acornops-demo-unhealthy-rs', uid: 'rs-uid',
+        ownerReferences: [{ kind: 'Deployment', name: 'acornops-demo-unhealthy', uid: 'deployment-uid', controller: true }],
+      },
+    } as never);
+    vi.mocked(k8sClient.apps.readNamespacedDeployment).mockResolvedValue({
+      metadata: { name: 'acornops-demo-unhealthy', uid: 'deployment-uid' },
+      spec: {
+        template: {
+          spec: {
+            containers: [{ name: 'nginx', image: 'nginx:1.27.4-alpnie' }],
+          },
+        },
+      },
+    } as never);
+
+    const result = await getResourceTool.handler({
+      kind: 'Pod',
+      name: 'acornops-demo-unhealthy-abc',
+      namespace: 'acornops-demo',
+    });
+    expect(result).toMatchObject({
+      ownership: {
+        status: 'resolved',
+        remediationTarget: {
+          kind: 'Deployment',
+          name: 'acornops-demo-unhealthy',
+          namespace: 'acornops-demo',
+          uid: 'deployment-uid',
+          containers: [{ name: 'nginx', image: 'nginx:1.27.4-alpnie' }],
+        },
+      },
+    });
+    expect(k8sClient.apps.readNamespacedReplicaSet).toHaveBeenCalledWith({
+      name: 'acornops-demo-unhealthy-rs',
+      namespace: 'acornops-demo',
+    });
+  });
+
+  it('marks standalone Pods as unowned instead of guessing a workload', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      apiVersion: 'v1', kind: 'Pod', metadata: { name: 'standalone', namespace: 'default', uid: 'pod-1' },
+    } as never);
+    const result = await getResourceTool.handler({ kind: 'Pod', name: 'standalone', namespace: 'default' });
+    expect(result).toMatchObject({
+      ownership: { status: 'unowned', remediationTarget: null, reason: 'standalone_pod_not_patchable' },
+    });
+    const context = getResourceTool.projectForModel(result, { kind: 'Pod', name: 'standalone', namespace: 'default' });
+    expect(context.summary).toContain('No patchable remediation target');
+  });
+
+  it('does not treat a non-controller owner reference as a remediation owner', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      apiVersion: 'v1', kind: 'Pod', metadata: {
+        name: 'observed', namespace: 'default', uid: 'pod-1',
+        ownerReferences: [{ kind: 'ReplicaSet', name: 'not-controller', uid: 'rs-1', controller: false }],
+      },
+    } as never);
+
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'observed', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'unowned', remediationTarget: null, reason: 'no_controlling_owner_reference',
+      } });
+    expect(k8sClient.apps.readNamespacedReplicaSet).not.toHaveBeenCalled();
+  });
+
+  it('resolves Job-owned Pods to a future-runs-only CronJob target', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'nightly-123-x', namespace: 'ops', uid: 'pod-1', ownerReferences: [
+        { kind: 'Job', name: 'nightly-123', uid: 'job-1', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.batch.readNamespacedJob).mockResolvedValue({
+      metadata: { name: 'nightly-123', uid: 'job-1', ownerReferences: [
+        { kind: 'CronJob', name: 'nightly', uid: 'cron-1', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.batch.readNamespacedCronJob).mockResolvedValue({
+      metadata: { name: 'nightly', uid: 'cron-1' },
+      spec: { jobTemplate: { spec: { template: { spec: { containers: [{ name: 'job', image: 'job:v1' }] } } } } },
+    } as never);
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'nightly-123-x', namespace: 'ops' }))
+      .resolves.toMatchObject({ ownership: { status: 'resolved', remediationTarget: {
+        kind: 'CronJob', name: 'nightly', effect: 'future_runs_only',
+      } } });
+  });
+
+  it.each([
+    ['StatefulSet', vi.mocked(k8sClient.apps.readNamespacedStatefulSet)],
+    ['DaemonSet', vi.mocked(k8sClient.apps.readNamespacedDaemonSet)],
+  ])('resolves a Pod directly to its UID-verified %s', async (kind, method) => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'api-pod', namespace: 'default', uid: 'pod-1', ownerReferences: [
+        { kind, name: 'api', uid: 'owner-1', controller: true },
+      ] },
+    } as never);
+    method.mockResolvedValue({
+      metadata: { name: 'api', uid: 'owner-1' },
+      spec: { template: { spec: { containers: [{ name: 'api', image: 'api:v1' }] } } },
+    } as never);
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'api-pod', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: { status: 'resolved', remediationTarget: {
+        kind, name: 'api', uid: 'owner-1', containers: [{ name: 'api', image: 'api:v1' }],
+      } } });
+  });
+
+  it('preserves a partial path when RBAC denies owner traversal', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'api-pod', namespace: 'default', uid: 'pod-1', ownerReferences: [
+        { kind: 'ReplicaSet', name: 'api-rs', uid: 'rs-1', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.apps.readNamespacedReplicaSet).mockRejectedValue({ statusCode: 403 });
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'api-pod', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'partial', remediationTarget: null, error: { code: 'OWNER_LOOKUP_FORBIDDEN' },
+        path: [{ kind: 'Pod', name: 'api-pod' }, { kind: 'ReplicaSet', name: 'api-rs', uid: 'rs-1' }],
+      } });
+  });
+
+  it('preserves the referenced owner when it is deleted during traversal', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'api-pod', namespace: 'default', uid: 'pod-1', ownerReferences: [
+        { kind: 'ReplicaSet', name: 'api-rs', uid: 'rs-1', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.apps.readNamespacedReplicaSet).mockRejectedValue({ statusCode: 404 });
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'api-pod', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'partial', remediationTarget: null, error: { code: 'OWNER_NOT_FOUND' },
+        path: [
+          { kind: 'Pod', name: 'api-pod', uid: 'pod-1', controller: false },
+          { kind: 'ReplicaSet', name: 'api-rs', uid: 'rs-1', controller: true },
+        ],
+      } });
+  });
+
+  it('does not patch through an orphan ReplicaSet', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'orphan-pod', namespace: 'default', uid: 'pod-1', ownerReferences: [
+        { kind: 'ReplicaSet', name: 'orphan-rs', uid: 'rs-1', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.apps.readNamespacedReplicaSet).mockResolvedValue({
+      metadata: { name: 'orphan-rs', uid: 'rs-1' },
+    } as never);
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'orphan-pod', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'partial', remediationTarget: null, reason: 'owner_chain_incomplete',
+      } });
+  });
+
+  it('marks a directly owned active Job immutable for current-Pod remediation', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'job-pod', namespace: 'default', uid: 'pod-1', ownerReferences: [
+        { kind: 'Job', name: 'one-off', uid: 'job-1', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.batch.readNamespacedJob).mockResolvedValue({
+      metadata: { name: 'one-off', uid: 'job-1' },
+    } as never);
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'job-pod', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'unsupported', remediationTarget: null, reason: 'active_job_template_immutable',
+      } });
+  });
+
+  it('rejects unsupported custom controllers without guessing a target', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'custom-pod', namespace: 'default', uid: 'pod-1', ownerReferences: [
+        { kind: 'Rollout', name: 'api', uid: 'rollout-1', controller: true },
+      ] },
+    } as never);
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'custom-pod', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'unsupported', remediationTarget: null, error: { code: 'OWNER_KIND_UNSUPPORTED' },
+      } });
+  });
+
+  it('reports owner UID replacement and does not expose a remediation target', async () => {
+    vi.mocked(k8sClient.core.readNamespacedPod).mockResolvedValue({
+      metadata: { name: 'api-old', namespace: 'default', ownerReferences: [
+        { kind: 'ReplicaSet', name: 'api-rs', uid: 'old-uid', controller: true },
+      ] },
+    } as never);
+    vi.mocked(k8sClient.apps.readNamespacedReplicaSet).mockResolvedValue({
+      metadata: { name: 'api-rs', uid: 'new-uid' },
+    } as never);
+    await expect(getResourceTool.handler({ kind: 'Pod', name: 'api-old', namespace: 'default' }))
+      .resolves.toMatchObject({ ownership: {
+        status: 'partial', remediationTarget: null, error: { code: 'OWNER_UID_MISMATCH' },
+      } });
+  });
+
+  it('projects direct workload patch prerequisites within the model-context budget', () => {
+    const resource = {
+      apiVersion: 'apps/v1', kind: 'Deployment',
+      metadata: { name: 'api', namespace: 'default', uid: 'deployment-1', resourceVersion: '7' },
+      spec: {
+        selector: { matchLabels: Object.fromEntries(Array.from({ length: 500 }, (_, index) => [`key-${index}`, 'x'.repeat(50)])) },
+        template: { spec: {
+          containers: [{ name: 'api', image: 'registry.example.test/api:v1' }],
+          initContainers: [{ name: 'migrate', image: 'registry.example.test/migrate:v1' }],
+        } },
+      },
+    };
+    const context = getResourceTool.projectForModel(
+      { resource }, { kind: 'Deployment', name: 'api', namespace: 'default' }
+    );
+    expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(12 * 1024);
+    expect(context.data.remediationTarget).toMatchObject({
+      kind: 'Deployment', name: 'api', uid: 'deployment-1',
+      containers: [{ name: 'api', image: 'registry.example.test/api:v1' }],
+      initContainers: [{ name: 'migrate', image: 'registry.example.test/migrate:v1' }],
+    });
+    expect(context.omissions).toContainEqual({
+      path: 'data.configuration.selector', reason: 'context_byte_limit', originalBytes: expect.any(Number),
+    });
+  });
+
+  it('projects an exact remediation target for a directly patchable Ingress', () => {
+    const context = getResourceTool.projectForModel(
+      {
+        resource: {
+          apiVersion: 'networking.k8s.io/v1',
+          kind: 'Ingress',
+          metadata: {
+            name: 'api', namespace: 'default', uid: 'ingress-1', resourceVersion: '9',
+          },
+          spec: { rules: [{ host: 'api.example.test' }] },
+        },
+      },
+      { kind: 'Ingress', name: 'api', namespace: 'default' },
+    );
+
+    expect(context.data.remediationTarget).toMatchObject({
+      kind: 'Ingress', name: 'api', namespace: 'default', uid: 'ingress-1', effect: 'current_resource',
+    });
+  });
+
+  it('fails closed when complete remediation prerequisites cannot fit model context', () => {
+    const resource = {
+      apiVersion: 'apps/v1', kind: 'Deployment',
+      metadata: { name: 'huge', namespace: 'default', uid: 'deployment-1', resourceVersion: '7' },
+      spec: { template: { spec: { containers: Array.from({ length: 100 }, (_, index) => ({
+        name: `container-${index}`, image: `registry.example.test/${'x'.repeat(300)}:${index}`,
+      })) } } },
+    };
+    const context = getResourceTool.projectForModel(
+      { resource }, { kind: 'Deployment', name: 'huge', namespace: 'default' }
+    );
+    expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(12 * 1024);
+    expect(context).toMatchObject({
+      status: 'success',
+      data: { code: 'MODEL_CONTEXT_TOO_LARGE', remediationTarget: null },
+    });
   });
 
   it('redacts sensitive data from returned Kubernetes objects', async () => {
@@ -145,7 +413,8 @@ describe('getResourceTool', () => {
     const serialized = JSON.stringify(result);
 
     expect(result).toMatchObject({
-      metadata: {
+      resource: {
+        metadata: {
         name: 'api',
         namespace: 'default',
         labels: {
@@ -157,7 +426,7 @@ describe('getResourceTool', () => {
           'checksum/secret': '<redacted>',
         },
       },
-      spec: {
+        spec: {
         containers: [
           {
             name: 'api',
@@ -181,9 +450,10 @@ describe('getResourceTool', () => {
         ],
         imagePullSecrets: [{ name: '<redacted>' }],
         volumes: [{ name: 'db', secret: { secretName: '<redacted>' } }],
-      },
+        },
+      }
     });
-    expect(result).not.toHaveProperty('metadata.managedFields');
+    expect(result).not.toHaveProperty('resource.metadata.managedFields');
     expect(serialized).not.toContain('plain-env-secret');
     expect(serialized).not.toContain('label-token');
     expect(serialized).not.toContain('annotation-secret');
@@ -205,8 +475,10 @@ describe('getResourceTool', () => {
         name: 'worker-1',
       }),
     ).resolves.toMatchObject({
-      metadata: { name: 'worker-1' },
-      spec: { providerID: '<redacted>' },
+      resource: {
+        metadata: { name: 'worker-1' },
+        spec: { providerID: '<redacted>' },
+      },
     });
   });
 

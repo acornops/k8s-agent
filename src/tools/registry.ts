@@ -1,6 +1,16 @@
 import { z } from 'zod';
 
 export type ToolCapability = 'read' | 'write';
+export type ArtifactPolicy = 'never' | 'if_detailed' | 'always';
+
+export interface ModelContextEnvelope {
+  schemaVersion: 'acornops.model-context.v1';
+  tool: string;
+  status: 'success' | 'error';
+  summary: string;
+  data: Record<string, unknown>;
+  omissions: Array<Record<string, unknown>>;
+}
 
 export type ToolScope =
   | { type: 'namespaced'; namespace: string }
@@ -23,10 +33,13 @@ export interface ToolDefinition {
   capability: ToolCapability;
   timeoutMs: number;
   version: string;
+  outputSchema: Record<string, unknown>;
+  artifactPolicy: ArtifactPolicy;
   deprecated?: boolean;
   schema: z.ZodTypeAny;
   scopeResolver: (params: any) => ToolScope;
   handler: (params: any, context?: ToolExecutionContext) => Promise<any>;
+  projectForModel: (result: any, params: any) => ModelContextEnvelope;
 }
 
 /**

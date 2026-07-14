@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ZodError } from 'zod';
 import { config } from '../config.js';
 import { canAccessClusterScopedKind, isNamespaceAllowed } from '../runtime/namespace-scope.js';
 import { redactKubernetesResource } from './resource-redaction.js';
@@ -12,6 +13,47 @@ export interface ToolSessionPolicy {
 }
 
 const LIST_RESULT_FIELDS = new Set(['continue_token']);
+const AMBIGUOUS_WRITE_ERROR_CODES = new Set([
+  'TOOL_TIMEOUT',
+  'OUTPUT_TOO_LARGE',
+  'KUBERNETES_ERROR',
+  'KUBERNETES_TIMEOUT',
+  'KUBERNETES_UNAVAILABLE',
+]);
+
+/** Retain actionable schema failures without echoing an unbounded caller payload. */
+function boundedValidationDetails(error: ZodError): Record<string, unknown> {
+  const retained = error.issues.slice(0, 12).map((issue) => ({
+    code: issue.code,
+    path: issue.path.slice(0, 6).map((segment) =>
+      typeof segment === 'string' ? segment.slice(0, 64) : segment),
+    message: issue.message.slice(0, 240),
+  }));
+  return {
+    issues: retained,
+    ...(error.issues.length > retained.length
+      ? { omittedIssues: error.issues.length - retained.length }
+      : {}),
+  };
+}
+
+/** Preserve write uncertainty whenever execution may have crossed the Kubernetes boundary. */
+function withUnknownWriteOutcome(
+  error: ToolExecutionError,
+  capability: ToolCapability,
+  operationId: string,
+): ToolExecutionError {
+  if (
+    capability !== 'write'
+    || !AMBIGUOUS_WRITE_ERROR_CODES.has(error.toolCode)
+    || error.data?.outcome === 'not_started'
+  ) return error;
+  return new ToolExecutionError(error.toolCode, error.message, {
+    ...error.data,
+    outcome: 'unknown',
+    operationId,
+  });
+}
 
 class AdmissionGate {
   private active = 0;
@@ -154,7 +196,11 @@ export class ToolExecutor {
 
     const parsed = tool.schema.safeParse(params.arguments);
     if (!parsed.success) {
-      throw new ToolExecutionError('INVALID_ARGUMENTS', 'Invalid tool arguments', parsed.error.flatten());
+      throw new ToolExecutionError(
+        'INVALID_ARGUMENTS',
+        'Invalid tool arguments',
+        boundedValidationDetails(parsed.error),
+      );
     }
     this.authorizeScope(tool, parsed.data);
 
@@ -213,13 +259,19 @@ export class ToolExecutor {
       }
       return result;
     } catch (err) {
-      if (err instanceof ToolExecutionError) throw err;
+      if (err instanceof ToolExecutionError) {
+        throw withUnknownWriteOutcome(err, tool.capability, operationId);
+      }
       if (isKubernetesPreconditionFailure(err)) {
         throw new ToolExecutionError('PRECONDITION_FAILED', 'Kubernetes resource precondition failed');
       }
       const mappedError = mapKubernetesError(err, parsed.data);
-      if (mappedError) throw mappedError;
-      throw new ToolExecutionError('KUBERNETES_ERROR', 'Kubernetes operation failed');
+      if (mappedError) throw withUnknownWriteOutcome(mappedError, tool.capability, operationId);
+      throw withUnknownWriteOutcome(
+        new ToolExecutionError('KUBERNETES_ERROR', 'Kubernetes operation failed'),
+        tool.capability,
+        operationId,
+      );
     } finally {
       if (timer) clearTimeout(timer);
       if (timedOut && handlerPromise) {

@@ -28,7 +28,7 @@ vi.mock('../../k8s/client.js', () => ({
 import { config } from '../../config.js';
 import { k8sClient } from '../../k8s/client.js';
 import { ToolExecutionError } from '../errors.js';
-import { patchResourceHandler, patchResourceSchema, PatchResourceRequest } from './patch-resource.js';
+import { patchResourceHandler, patchResourceSchema, patchResourceTool, PatchResourceRequest } from './patch-resource.js';
 
 function deployment(image = 'registry.example.com/api:bad') {
   return {
@@ -326,5 +326,21 @@ describe('patchResourceTool', () => {
     expect(() => parseRequest({ changes: [
       { type: 'set_image', container_type: 'container', container: 'api', expected_image: 'same:v1', image: 'same:v1' },
     ] })).toThrow('no-op');
+  });
+
+  it('projects exact post-write verification guidance', () => {
+    const context = patchResourceTool.projectForModel({
+      success: true,
+      operationId: 'op-1',
+      target: { kind: 'Deployment', namespace: 'team-a', name: 'api', uid: 'uid-1' },
+      change: { type: 'patch' },
+      observed: { resourceVersion: '11' },
+    }, {});
+
+    expect(context.data.verification).toEqual({
+      tool: 'get_resource',
+      target: { kind: 'Deployment', namespace: 'team-a', name: 'api', uid: 'uid-1' },
+      instruction: expect.stringContaining('confirm the requested state'),
+    });
   });
 });

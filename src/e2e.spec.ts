@@ -176,7 +176,13 @@ describe('E2E Agent Lifecycle', () => {
       messages,
       (message) => !message.isBinary && message.parsed?.id === 'tools-call-write-disabled',
     );
-    expect((writeDisabledResponse.parsed as { error?: { code?: number } }).error?.code).toBe(-32002);
+    expect(writeDisabledResponse.parsed?.result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        schemaVersion: 'acornops.full-tool-result.v1',
+        data: { code: 'WRITE_DISABLED', retryable: false },
+      },
+    });
 
     connection.close();
     await waitForCondition(() => sockets.length >= expectedSocketsAfterReconnect, 30000);

@@ -199,6 +199,23 @@ describe('ToolExecutor', () => {
     await vi.advanceTimersByTimeAsync(50);
   });
 
+  it('marks ambiguous Kubernetes write failures with an unknown outcome', async () => {
+    toolRegistry.register({
+      name: 'unavailable_write', description: 'write', capability: 'write', timeoutMs: 1000, version: 'v1',
+      schema: z.object({}).strict(), scopeResolver: () => ({ type: 'namespace-collection' }),
+      handler: async () => { throw { statusCode: 503 }; },
+    });
+
+    await expect(toolExecutor.execute({
+      name: 'unavailable_write', arguments: {}, requestId: 'write-503',
+      policy: { allowedTools: new Set(['unavailable_write']), writeEnabled: true, generation: 1 },
+    })).rejects.toSatisfy((err: ToolExecutionError) => (
+      err.toolCode === 'KUBERNETES_UNAVAILABLE'
+      && err.data?.outcome === 'unknown'
+      && typeof err.data?.operationId === 'string'
+    ));
+  });
+
   it('does not release a write slot until a timed-out operation settles', async () => {
     vi.useFakeTimers();
     const executor = new ToolExecutor({ readConcurrency: 1, writeConcurrency: 1, queueLimit: 1 });
@@ -311,6 +328,25 @@ describe('ToolExecutor', () => {
         name: 'missing-api',
         namespace: 'demo',
       },
+    });
+  });
+
+  it('makes a missing guessed workload name recoverable', async () => {
+    toolRegistry.register({
+      name: 'deployment_read', description: 'read', capability: 'read', timeoutMs: 1000, version: 'v1',
+      schema: z.object({ kind: z.string(), name: z.string(), namespace: z.string() }).strict(),
+      scopeResolver: (args) => ({ type: 'namespaced', namespace: args.namespace }),
+      handler: async () => { throw Object.assign(new Error('not found'), { statusCode: 404 }); },
+    });
+
+    await expect(toolExecutor.execute({
+      name: 'deployment_read',
+      arguments: { kind: 'Deployment', name: 'acornops-demo', namespace: 'acornops-demo' },
+      requestId: 'missing-guessed-workload',
+      policy: { allowedTools: new Set(['deployment_read']), writeEnabled: false, generation: 1 },
+    })).rejects.toMatchObject({
+      toolCode: 'RESOURCE_NOT_FOUND',
+      message: 'Deployment "acornops-demo" in namespace "acornops-demo" was not found; use list_resources for the exact kind or follow ownerReferences instead of retrying a guessed name',
     });
   });
 

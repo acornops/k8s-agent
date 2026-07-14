@@ -73,11 +73,18 @@ export function mapKubernetesError(err: unknown, args?: unknown): ToolExecutionE
   const status = kubernetesStatus(err);
   const context = resourceContext(args);
   if (status === 404) {
-    return new ToolExecutionError('RESOURCE_NOT_FOUND', 'Kubernetes resource was not found', {
+    const identity = context.kind && context.name
+      ? `${context.kind} "${context.name}"${context.namespace ? ` in namespace "${context.namespace}"` : ''}`
+      : 'Kubernetes resource';
+    return new ToolExecutionError(
+      'RESOURCE_NOT_FOUND',
+      `${identity} was not found; use list_resources for the exact kind or follow ownerReferences instead of retrying a guessed name`,
+      {
       status: 404,
       reason: 'NotFound',
       ...context,
-    });
+      }
+    );
   }
   if (status === 401 || status === 403) {
     return new ToolExecutionError('KUBERNETES_FORBIDDEN', 'Kubernetes denied access to the requested resource', {

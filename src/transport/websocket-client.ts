@@ -12,7 +12,7 @@ const logger = pino({ level: config.ACORNOPS_AGENT_LOG_LEVEL }).child({ module: 
 export class WebSocketClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectDelay = 60000;
+  private readonly maxReconnectDelay = 15000;
   private url: string;
   private stopped = true;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -73,7 +73,9 @@ export class WebSocketClient extends EventEmitter {
   private scheduleReconnect(): void {
     if (this.stopped) return;
 
-    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, this.maxReconnectDelay);
+    const baseDelay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, this.maxReconnectDelay);
+    // Equal jitter prevents a control-plane recovery from reconnecting every agent at once.
+    const delay = Math.round((baseDelay / 2) + (Math.random() * baseDelay / 2));
     this.reconnectAttempts++;
 
     logger.info({ delay, attempt: this.reconnectAttempts }, 'Scheduling reconnection...');

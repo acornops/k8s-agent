@@ -11,8 +11,10 @@ import { toolRegistry } from '../tools/registry.js';
 import { zodToJsonSchema } from '../tools/json-schema.js';
 import { ToolExecutionError } from '../tools/errors.js';
 import { ToolSessionPolicy, toolExecutor } from '../tools/executor.js';
+import { buildCallToolResult } from '../tools/model-context.js';
 
 const logger = pino({ level: config.ACORNOPS_AGENT_LOG_LEVEL }).child({ module: 'mcp-router' });
+const RETRYABLE_TOOL_ERRORS = new Set(['TOOL_TIMEOUT', 'TOOL_BUSY', 'KUBERNETES_TIMEOUT', 'KUBERNETES_UNAVAILABLE']);
 
 /**
  * Routes incoming JSON-RPC requests to the appropriate tool or service handler.
@@ -58,7 +60,9 @@ export class McpRouter {
           name: t.name,
           description: t.description,
           capability: t.capability,
-          input_schema: zodToJsonSchema(t.schema),
+          inputSchema: zodToJsonSchema(t.schema),
+          outputSchema: t.outputSchema,
+          artifactPolicy: t.artifactPolicy,
           timeout_ms: t.timeoutMs,
           version: t.version,
           deprecated: Boolean(t.deprecated),
@@ -93,20 +97,33 @@ export class McpRouter {
         requestId: request.id,
         policy: this.sessionPolicy!,
       });
-      return createResponse(request.id, result);
+      const context = tool.projectForModel(result, args || {});
+      return createResponse(request.id, buildCallToolResult(context, result, tool.artifactPolicy));
     } catch (err: any) {
       logger.error({ tool: name, code: err instanceof ToolExecutionError ? err.toolCode : 'INTERNAL_ERROR' }, 'Tool execution failed');
-      if (err instanceof ToolExecutionError) {
-        return createErrorResponse(request.id, err.rpcCode, err.message, {
+      const error = err instanceof ToolExecutionError
+        ? {
           code: err.toolCode,
+          message: err.message,
           ...err.data,
-        });
-      }
-      return createErrorResponse(
-        request.id,
-        RPC_ERRORS.INTERNAL_ERROR,
-        'Internal error during tool execution'
-      );
+          retryable: RETRYABLE_TOOL_ERRORS.has(err.toolCode)
+            && !(tool.capability === 'write' && err.data?.outcome === 'unknown'),
+        }
+        : {
+          code: 'INTERNAL_ERROR',
+          message: 'Internal error during tool execution',
+          retryable: false,
+          ...(tool.capability === 'write' ? { outcome: 'unknown' } : {}),
+        };
+      const context = {
+        schemaVersion: 'acornops.model-context.v1' as const,
+        tool: name,
+        status: 'error' as const,
+        summary: String(error.message).slice(0, 500),
+        data: error,
+        omissions: [],
+      };
+      return createResponse(request.id, buildCallToolResult(context, error, tool.artifactPolicy, true));
     }
   }
 }

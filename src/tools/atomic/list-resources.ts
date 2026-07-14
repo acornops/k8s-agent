@@ -7,6 +7,16 @@ import { checkNamespaceAllowed } from '../utils.js';
 import { continuationTokenSchema, namespaceSchema, selectorSchema } from '../schemas.js';
 import { filterNamespaceItems, getEffectiveNamespaceScope, hasBoundedNamespaceInclude, isNamespaceAllowed } from '../../runtime/namespace-scope.js';
 import { ToolExecutionError } from '../errors.js';
+import { boundedItems, fullToolResultOutputSchema } from '../model-context.js';
+
+const OUTPUT_SCHEMA = fullToolResultOutputSchema({
+  type: 'object', required: ['kind', 'namespace', 'total', 'continue_token', 'items'],
+  properties: {
+    kind: { type: 'string' }, namespace: { type: 'string' }, total: { type: 'integer' },
+    continue_token: { type: 'string' }, items: { type: 'array' },
+  },
+  additionalProperties: false,
+});
 
 const schema = z.object({
   kind: z.enum(['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'Job', 'Service', 'Ingress', 'PVC', 'HPA', 'Namespace', 'Node', 'Event']),
@@ -15,7 +25,15 @@ const schema = z.object({
   field_selector: selectorSchema.optional(),
   limit: z.number().int().min(1).max(1000).optional().default(100),
   continue_token: continuationTokenSchema.optional()
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.namespace === 'all') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['namespace'],
+      message: 'omit namespace to query all allowed namespaces; do not pass the literal value "all"'
+    });
+  }
+});
 
 /** Convert a Kubernetes API object into a compact list item summary. */
 function summarizeResource(kind: string, item: any): Record<string, unknown> {
@@ -339,13 +357,34 @@ async function listAcrossAllowedNamespaces(
 
 export const listResourcesTool: ToolDefinition = {
   name: 'list_resources',
-  description: 'List Kubernetes resources by kind with optional namespace and selector filters.',
+  description: 'List Kubernetes resources by kind with optional namespace and selector filters. To query across all allowed namespaces, omit namespace entirely; never pass namespace="all" or namespace="*". Returned items include their actual namespace.',
   capability: 'read',
   timeoutMs: 12000,
   version: 'v1',
+  outputSchema: OUTPUT_SCHEMA,
+  artifactPolicy: 'if_detailed',
   schema,
   scopeResolver: (params) => ['Node', 'Namespace'].includes(params.kind)
     ? ({ type: 'cluster', kind: params.kind })
     : ({ type: 'namespace-collection', namespace: params.namespace }),
-  handler
+  handler,
+  projectForModel: (result) => {
+    const bounded = boundedItems(Array.isArray(result?.items) ? result.items : [], 50);
+    return {
+      schemaVersion: 'acornops.model-context.v1',
+      tool: 'list_resources',
+      status: 'success',
+      summary: `Returned ${result?.total ?? bounded.items.length} ${result?.kind || 'resource'} item(s) from ${result?.namespace === '*' ? 'all allowed namespaces' : result?.namespace || 'the requested scope'}.`,
+      data: {
+        kind: result?.kind,
+        namespace: result?.namespace,
+        total: result?.total,
+        returnedCount: result?.total,
+        hasMore: Boolean(result?.continue_token),
+        continue_token: result?.continue_token,
+        items: bounded.items,
+      },
+      omissions: bounded.omissions,
+    };
+  },
 };

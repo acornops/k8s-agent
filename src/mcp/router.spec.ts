@@ -1,14 +1,34 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mcpRouter } from './router.js';
 import { toolRegistry } from '../tools/registry.js';
 import { z } from 'zod';
 import { createRequest } from './protocol.js';
+import { FULL_TOOL_RESULT_OUTPUT_SCHEMA } from '../tools/model-context.js';
+import { config } from '../config.js';
+import { ToolExecutionError } from '../tools/errors.js';
+
+const projectionFields = {
+  outputSchema: FULL_TOOL_RESULT_OUTPUT_SCHEMA,
+  artifactPolicy: 'never' as const,
+  projectForModel: (result: any) => ({
+    schemaVersion: 'acornops.model-context.v1' as const,
+    tool: 'test_tool',
+    status: 'success' as const,
+    summary: 'Test tool completed.',
+    data: result,
+    omissions: [],
+  }),
+};
 
 describe('MCP Router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     toolRegistry.resetForTests();
     mcpRouter.setSessionPolicy({ allowedTools: new Set(), writeEnabled: true, generation: 1 });
+  });
+
+  afterEach(() => {
+    config.ACORNOPS_AGENT_WRITE_ENABLED = false;
   });
 
   it('rejects discovery before a session policy is installed', async () => {
@@ -32,6 +52,7 @@ describe('MCP Router', () => {
       capability: 'read',
       timeoutMs: 1000,
       version: 'v1',
+      ...projectionFields,
       schema: z.object({ arg1: z.string() }),
       scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: mockHandler,
@@ -41,7 +62,11 @@ describe('MCP Router', () => {
     const req = createRequest('tools/call', { name: 'test_tool', arguments: { arg1: 'hello' } }, 1);
     const res = await mcpRouter.handleRequest(req);
 
-    expect(res.result).toEqual({ success: true });
+    expect(res.result).toMatchObject({
+      content: [{ type: 'text', text: expect.stringContaining('Test tool completed') }],
+      structuredContent: { schemaVersion: 'acornops.full-tool-result.v1', data: { success: true } },
+      isError: false,
+    });
     expect(mockHandler).toHaveBeenCalledWith({ arg1: 'hello' }, expect.objectContaining({ operationId: expect.any(String) }));
   });
 
@@ -60,6 +85,7 @@ describe('MCP Router', () => {
       capability: 'write',
       timeoutMs: 2500,
       version: 'v2',
+      ...projectionFields,
       deprecated: true,
       schema: z.object({
         name: z.string(),
@@ -77,7 +103,7 @@ describe('MCP Router', () => {
       name: 'metadata_tool',
       description: 'Exposes metadata',
       capability: 'write',
-      input_schema: {
+      inputSchema: {
         $schema: 'https://json-schema.org/draft/2020-12/schema',
         type: 'object',
         properties: {
@@ -87,6 +113,8 @@ describe('MCP Router', () => {
         required: ['name'],
         additionalProperties: false,
       },
+      outputSchema: FULL_TOOL_RESULT_OUTPUT_SCHEMA,
+      artifactPolicy: 'never',
       timeout_ms: 2500,
       version: 'v2',
       deprecated: true,
@@ -110,6 +138,7 @@ describe('MCP Router', () => {
       capability: 'read',
       timeoutMs: 1000,
       version: 'v1',
+      ...projectionFields,
       schema: z.object({ arg1: z.string() }),
       scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: vi.fn(),
@@ -120,9 +149,41 @@ describe('MCP Router', () => {
       createRequest('tools/call', { name: 'validated_tool', arguments: {} }, 3)
     );
 
-    expect(res.error?.code).toBe(-32602);
-    expect(res.error?.message).toBe('Invalid tool arguments');
-    expect(res.error?.data.fieldErrors.arg1).toBeDefined();
+    expect(res.result).toMatchObject({
+      isError: true,
+      structuredContent: { data: { code: 'INVALID_ARGUMENTS', message: 'Invalid tool arguments' } },
+    });
+    expect(JSON.parse(res.result.content[0].text).data.issues).toEqual([
+      expect.objectContaining({ path: ['arg1'] }),
+    ]);
+  });
+
+  it('bounds validation details for adversarially large invalid arguments', async () => {
+    toolRegistry.register({
+      name: 'bounded_validation_tool',
+      description: 'Requires an empty object',
+      capability: 'read',
+      timeoutMs: 1000,
+      version: 'v1',
+      ...projectionFields,
+      schema: z.object({}).strict(),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
+      handler: vi.fn(),
+    });
+    mcpRouter.setSessionPolicy({
+      allowedTools: new Set(['bounded_validation_tool']), writeEnabled: true, generation: 1,
+    });
+    const argumentsPayload = Object.fromEntries(
+      Array.from({ length: 2000 }, (_, index) => [`unexpected_${index}`, 'value'])
+    );
+
+    const res = await mcpRouter.handleRequest(createRequest(
+      'tools/call', { name: 'bounded_validation_tool', arguments: argumentsPayload }, 31
+    ));
+
+    expect(res.result.isError).toBe(true);
+    expect(Buffer.byteLength(res.result.content[0].text)).toBeLessThanOrEqual(12 * 1024);
+    expect(() => JSON.parse(res.result.content[0].text)).not.toThrow();
   });
 
   it('returns internal errors when a tool throws', async () => {
@@ -132,6 +193,7 @@ describe('MCP Router', () => {
       capability: 'read',
       timeoutMs: 1000,
       version: 'v1',
+      ...projectionFields,
       schema: z.object({}),
       scopeResolver: () => ({ type: 'namespace-collection' }),
       handler: vi.fn().mockRejectedValue(new Error('tool exploded')),
@@ -142,10 +204,63 @@ describe('MCP Router', () => {
       createRequest('tools/call', { name: 'failing_tool', arguments: {} }, 4)
     );
 
-    expect(res.error).toEqual({
-      code: -32007,
-      message: 'Kubernetes operation failed',
-      data: { code: 'KUBERNETES_ERROR' },
+    expect(res.result).toMatchObject({
+      isError: true,
+      structuredContent: { data: { code: 'KUBERNETES_ERROR', message: 'Kubernetes operation failed' } },
+    });
+  });
+
+  it('marks a post-execution write projection failure as outcome unknown', async () => {
+    config.ACORNOPS_AGENT_WRITE_ENABLED = true;
+    toolRegistry.register({
+      name: 'write_projection_failure',
+      description: 'Completes a write before projection fails',
+      capability: 'write',
+      timeoutMs: 1000,
+      version: 'v1',
+      outputSchema: FULL_TOOL_RESULT_OUTPUT_SCHEMA,
+      artifactPolicy: 'never',
+      projectForModel: () => { throw new Error('projection failed'); },
+      schema: z.object({}),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
+      handler: vi.fn().mockResolvedValue({ success: true }),
+    });
+    mcpRouter.setSessionPolicy({
+      allowedTools: new Set(['write_projection_failure']), writeEnabled: true, generation: 1,
+    });
+
+    const res = await mcpRouter.handleRequest(createRequest(
+      'tools/call', { name: 'write_projection_failure', arguments: {} }, 5
+    ));
+
+    expect(res.result).toMatchObject({
+      isError: true,
+      structuredContent: { data: { code: 'INTERNAL_ERROR', outcome: 'unknown', retryable: false } },
+    });
+  });
+
+  it('never marks an unknown write outcome as retryable', async () => {
+    config.ACORNOPS_AGENT_WRITE_ENABLED = true;
+    toolRegistry.register({
+      name: 'ambiguous_write',
+      description: 'Fails after a write may have started',
+      capability: 'write',
+      timeoutMs: 1000,
+      version: 'v1',
+      ...projectionFields,
+      schema: z.object({}),
+      scopeResolver: () => ({ type: 'namespace-collection' }),
+      handler: vi.fn().mockRejectedValue(new ToolExecutionError('KUBERNETES_UNAVAILABLE', 'Unavailable')),
+    });
+    mcpRouter.setSessionPolicy({ allowedTools: new Set(['ambiguous_write']), writeEnabled: true, generation: 1 });
+
+    const res = await mcpRouter.handleRequest(
+      createRequest('tools/call', { name: 'ambiguous_write', arguments: {} }, 6)
+    );
+
+    expect(res.result).toMatchObject({
+      isError: true,
+      structuredContent: { data: { outcome: 'unknown', retryable: false } },
     });
   });
 

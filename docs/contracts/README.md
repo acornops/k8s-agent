@@ -26,6 +26,13 @@ Machine-readable contract data for this repo lives in `docs/contracts/manifest.j
 - Snapshots are sent as gzipped JSON-RPC notifications and later surfaced to the management console through the control plane.
 - Kubernetes resource snapshots may be assembled from a watch-backed local cache, but `notify/snapshot` remains the authoritative control-plane contract. The agent must fall back to list collection when the watch cache is disabled, warming, or unhealthy.
 - Any breaking change here must update this file and the mirrored control-plane contract doc in the same change.
+- Successful tools return bounded `acornops.model-context.v1` evidence in MCP
+  `content` and the complete redacted `acornops.full-tool-result.v1` payload in
+  `structuredContent.data`. Every built-in tool owns its projection, advertises
+  an output schema, and declares artifact eligibility. Model context is capped
+  at 12 KiB and is never truncated by slicing serialized JSON.
+  See [Tool Result Projections](/docs/design-docs/tool-result-projections.md) for
+  the projection and ownership safety invariants.
 
 ## Control-Plane WebSocket Contract
 
@@ -87,6 +94,10 @@ Current control-plane-expected builtin tool names:
 - `scale_workload`
 - `patch_resource`
 
+For `list_resources`, omitting `namespace` means all namespaces allowed by the
+effective AgentK scope. Callers must not pass synthetic namespace values such as
+`all` or `*`.
+
 ### Agent -> control plane notifications
 
 Heartbeat:
@@ -134,7 +145,9 @@ The control plane can issue:
 - `name`
 - `description`
 - `capability`
-- `input_schema`
+- `inputSchema`
+- `outputSchema`
+- `artifactPolicy`
 - `timeout_ms`
 - `version`
 - `deprecated`
@@ -148,9 +161,9 @@ The tool implementation remains local to the agent, but the advertised schemas a
 
 `get_resource` requires the exact Kubernetes kind, name, and namespace. Callers
 must not infer an owning workload name from a Pod name; they should use
-`ownerReferences` or list the candidate workload kind. Before calling
-`patch_resource`, callers use `get_resource` to obtain the exact container name,
-current image, and `metadata.uid` required by the guarded patch schema.
+the `remediationTarget` returned by Pod reads. That projection follows a
+UID-verified owner path when necessary and provides the exact owning workload
+kind/name, UID, container names, and current images required by `patch_resource`.
 
 Common Kubernetes client failures cross the tool boundary as sanitized stable
 codes: `RESOURCE_NOT_FOUND`, `KUBERNETES_FORBIDDEN`, `KUBERNETES_TIMEOUT`, and

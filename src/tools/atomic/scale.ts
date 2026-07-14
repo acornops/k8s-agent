@@ -13,6 +13,7 @@ import {
   operationAnnotationsMatch,
 } from '../utils.js';
 import { WriteReceipt } from '../write-receipt.js';
+import { WRITE_TOOL_RESULT_OUTPUT_SCHEMA, writeProjection } from '../model-context.js';
 
 const schema = z.object({
   kind: z.enum(['Deployment', 'StatefulSet']),
@@ -146,7 +147,10 @@ export const scaleWorkloadTool: ToolDefinition = {
   capability: 'write',
   timeoutMs: 15000,
   version: 'v1',
+  outputSchema: WRITE_TOOL_RESULT_OUTPUT_SCHEMA,
+  artifactPolicy: 'never',
   schema,
   scopeResolver: (params) => ({ type: 'namespaced', namespace: params.namespace }),
   handler,
+  projectForModel: (result) => writeProjection('scale_workload', result),
 };

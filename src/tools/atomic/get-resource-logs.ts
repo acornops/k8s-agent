@@ -5,8 +5,25 @@ import { ToolDefinition, ToolExecutionContext } from '../registry.js';
 import { checkNamespaceAllowed } from '../utils.js';
 import { containerNameSchema, kubernetesNameSchema, namespaceSchema } from '../schemas.js';
 import { ToolExecutionError } from '../errors.js';
+import { fullToolResultOutputSchema } from '../model-context.js';
+
+const OUTPUT_SCHEMA = fullToolResultOutputSchema({
+  type: 'object', required: ['name', 'namespace', 'container', 'logs'],
+  properties: {
+    name: { type: 'string' }, namespace: { type: 'string' },
+    container: { type: 'string' }, logs: { type: 'string' },
+  },
+  additionalProperties: false,
+});
 
 const MAX_LOG_BYTES = 1024 * 1024;
+const LOG_SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>'],
+  [/\bBasic\s+[A-Za-z0-9+/=]+/gi, 'Basic <redacted>'],
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gi, '$1<redacted>@'],
+  [/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '<redacted-private-key>'],
+  [/(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|access[_-]?token|auth[_-]?token|token|password|passwd|pwd|client[_-]?secret|secret[_-]?(?:access[_-]?)?key|credential)\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi, '$1<redacted>'],
+];
 
 const schema = z.object({
   name: kubernetesNameSchema,
@@ -37,6 +54,20 @@ async function readBoundedBody(response: Response): Promise<string> {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks, bytes).toString('utf8');
+}
+
+/** Remove common credential shapes from logs before model or artifact handling. */
+export function redactLogSecrets(value: string): string {
+  return LOG_SECRET_PATTERNS.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), value);
+}
+
+/** Return a UTF-8-safe suffix within a serialized byte budget. */
+function utf8Tail(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value, 'utf8');
+  if (buffer.length <= maxBytes) return value;
+  let start = buffer.length - maxBytes;
+  while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start += 1;
+  return buffer.subarray(start).toString('utf8');
 }
 
 /** Build the Kubernetes pod logs API URL for a specific pod request. */
@@ -96,14 +127,14 @@ async function handler(params: z.infer<typeof schema>, context?: ToolExecutionCo
   const { name, namespace, container, previous, tail_lines, since_seconds, limit_bytes } = params;
   checkNamespaceAllowed(namespace);
 
-  const logs = await readPodLogsText(name, namespace, {
+  const logs = redactLogSecrets(await readPodLogsText(name, namespace, {
     container,
     previous,
     tail_lines,
     since_seconds,
     limit_bytes,
     signal: context?.signal,
-  });
+  }));
 
   return {
     name,
@@ -119,7 +150,40 @@ export const getResourceLogsTool: ToolDefinition = {
   capability: 'read',
   timeoutMs: 20000,
   version: 'v1',
+  outputSchema: OUTPUT_SCHEMA,
+  artifactPolicy: 'always',
   schema,
   scopeResolver: (params) => ({ type: 'namespaced', namespace: params.namespace }),
-  handler
+  handler,
+  projectForModel: (result, params) => {
+    const logs = typeof result?.logs === 'string' ? result.logs : '';
+    const excerptBytes = 8 * 1024;
+    const buffer = Buffer.from(logs, 'utf8');
+    const excerpt = utf8Tail(logs, excerptBytes);
+    const returnedLines = logs.length === 0 ? 0 : logs.split('\n').length - (logs.endsWith('\n') ? 1 : 0);
+    const excerptLines = excerpt.length === 0 ? 0 : excerpt.split('\n').length - (excerpt.endsWith('\n') ? 1 : 0);
+    return {
+      schemaVersion: 'acornops.model-context.v1',
+      tool: 'get_resource_logs',
+      status: 'success',
+      summary: `Read recent logs for Pod ${result?.namespace}/${result?.name}${result?.container ? ` container ${result.container}` : ''}.`,
+      data: {
+        target: { kind: 'Pod', name: result?.name, namespace: result?.namespace, container: result?.container || undefined },
+        requested: {
+          previous: params?.previous ?? false,
+          tailLines: params?.tail_lines ?? 200,
+          sinceSeconds: params?.since_seconds ?? null,
+          limitBytes: params?.limit_bytes ?? MAX_LOG_BYTES,
+        },
+        returnedBytes: buffer.length,
+        returnedLines,
+        excerptBytes: Buffer.byteLength(excerpt),
+        excerptLines,
+        logExcerpt: excerpt,
+      },
+      omissions: buffer.length > excerptBytes
+        ? [{ path: 'data.logExcerpt', reason: 'byte_limit', originalBytes: buffer.length, retainedBytes: Buffer.byteLength(excerpt) }]
+        : [],
+    };
+  },
 };

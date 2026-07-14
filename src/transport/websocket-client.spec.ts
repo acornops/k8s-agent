@@ -66,10 +66,12 @@ describe('WebSocketClient', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
     socketInstances.length = 0;
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllTimers();
     vi.useRealTimers();
   });
@@ -126,6 +128,19 @@ describe('WebSocketClient', () => {
     expect(socketInstances).toHaveLength(2);
     vi.advanceTimersByTime(1);
     expect(socketInstances).toHaveLength(3);
+  });
+
+  it('caps reconnect delay at 15 seconds', () => {
+    const client = new WebSocketClient('wss://platform.example/ws');
+
+    client.connect();
+    for (const delay of [1000, 2000, 4000, 8000, 15000, 15000]) {
+      socketInstances.at(-1)!.emit('close', 1006, Buffer.from('down'));
+      vi.advanceTimersByTime(delay - 1);
+      const count = socketInstances.length;
+      vi.advanceTimersByTime(1);
+      expect(socketInstances).toHaveLength(count + 1);
+    }
   });
 
   it('sends only on open sockets and reports open state', () => {

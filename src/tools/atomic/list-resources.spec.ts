@@ -52,6 +52,17 @@ describe('listResourcesTool', () => {
     setNamespaceScope({ include: [], exclude: [] });
   });
 
+  it('rejects a literal all namespace with guidance to omit the field', () => {
+    const result = listResourcesTool.schema.safeParse({ kind: 'Event', namespace: 'all' });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.flatten().fieldErrors.namespace).toContain(
+        'omit namespace to query all allowed namespaces; do not pass the literal value "all"'
+      );
+    }
+  });
+
   it('lists namespaced pods and returns summarized pod data', async () => {
     vi.mocked(k8sClient.core.listNamespacedPod).mockResolvedValue({
       metadata: { _continue: 'next-page' },

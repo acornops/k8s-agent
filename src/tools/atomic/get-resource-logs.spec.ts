@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getResourceLogsTool, readPodLogsText } from './get-resource-logs.js';
+import { getResourceLogsTool, readPodLogsText, redactLogSecrets } from './get-resource-logs.js';
 import { k8sClient } from '../../k8s/client.js';
 import fetch, { Headers, Response } from 'node-fetch';
 
@@ -24,6 +24,23 @@ vi.mock('../../k8s/client.js', () => ({
 }));
 
 describe('Get Resource Logs Tool', () => {
+  it('redacts common credentials before model and artifact handling', () => {
+    const value = redactLogSecrets(
+      'Authorization: Bearer abc.def Basic dXNlcjpwYXNz password=hunter2 '
+      + 'client_secret="client value" AWS_SECRET_ACCESS_KEY=aws-value AWS_ACCESS_KEY_ID=AKIAEXAMPLE '
+      + 'postgresql://db-user:db-password@database.example/app https://user:secret@example.com'
+    );
+    expect(value).not.toContain('abc.def');
+    expect(value).not.toContain('dXNlcjpwYXNz');
+    expect(value).not.toContain('hunter2');
+    expect(value).not.toContain('client value');
+    expect(value).not.toContain('aws-value');
+    expect(value).not.toContain('AKIAEXAMPLE');
+    expect(value).not.toContain('db-user:db-password@');
+    expect(value).not.toContain('user:secret@');
+    expect(value).toContain('<redacted>');
+  });
+
   beforeEach(() => {
     vi.mocked(k8sClient.kc.getCurrentCluster).mockReturnValue({ server: 'https://kube.example' } as never);
     vi.mocked(k8sClient.kc.applyToFetchOptions).mockResolvedValue({
@@ -95,5 +112,35 @@ describe('Get Resource Logs Tool', () => {
       tail_lines: 100,
       limit_bytes: 1024 * 1024,
     })).rejects.toMatchObject({ toolCode: 'OUTPUT_TOO_LARGE' });
+  });
+
+  it('projects a UTF-8-safe bounded tail with requested and returned counts', () => {
+    const logs = `${'line\n'.repeat(2000)}${'🙂'.repeat(3000)}`;
+    const context = getResourceLogsTool.projectForModel(
+      { name: 'api', namespace: 'default', container: 'api', logs },
+      { previous: false, tail_lines: 5000, since_seconds: 60, limit_bytes: 1024 * 1024 }
+    );
+
+    expect(Buffer.byteLength(String(context.data.logExcerpt))).toBeLessThanOrEqual(8 * 1024);
+    expect(String(context.data.logExcerpt)).not.toContain('�');
+    expect(context.data).toMatchObject({
+      requested: { previous: false, tailLines: 5000, sinceSeconds: 60, limitBytes: 1024 * 1024 },
+      returnedBytes: Buffer.byteLength(logs),
+    });
+    expect(context.omissions).toHaveLength(1);
+  });
+
+  it('reports effective request defaults in the model projection', () => {
+    const context = getResourceLogsTool.projectForModel(
+      { name: 'api', namespace: 'default', container: '', logs: 'ready\n' },
+      {}
+    );
+
+    expect(context.data.requested).toEqual({
+      previous: false,
+      tailLines: 200,
+      sinceSeconds: null,
+      limitBytes: 1024 * 1024,
+    });
   });
 });

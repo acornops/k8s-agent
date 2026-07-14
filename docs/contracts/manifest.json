@@ -57,7 +57,9 @@
         "name",
         "description",
         "capability",
-        "input_schema",
+        "inputSchema",
+        "outputSchema",
+        "artifactPolicy",
         "timeout_ms",
         "version",
         "deprecated"

@@ -23,6 +23,7 @@ import {
   operationAnnotationsMatch,
 } from '../utils.js';
 import { WriteReceipt } from '../write-receipt.js';
+import { WRITE_TOOL_RESULT_OUTPUT_SCHEMA, writeProjection } from '../model-context.js';
 
 const workloadKinds = new Set<SupportedPatchKind>(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob']);
 const scopeSchema = z.enum(['resource', 'pod_template']);
@@ -511,11 +512,14 @@ export async function patchResourceHandler(request: PatchResourceRequest, contex
 
 export const patchResourceTool: ToolDefinition = {
   name: 'patch_resource',
-  description: 'Apply bounded semantic changes to one existing resource after reading it with get_resource. Supply the exact kind/name/namespace, metadata.uid as expected_uid, and current values as operation preconditions. For set_image, use the exact container name, container_type, and current image returned by get_resource; patch the owning workload such as a Deployment, never its generated Pod. Supports image, label, annotation, and explicitly enabled Service selector changes.',
+  description: 'Patch the exact remediationTarget after get_resource. Use its UID as expected_uid and current values as preconditions. Image example: changes=[{"type":"set_image","container_type":"container","container":"nginx","expected_image":"nginx:old","image":"nginx:new"}]. expected_image is the current image; image is the desired image. Never patch a generated Pod or guessed controller name.',
   capability: 'write',
   timeoutMs: 20000,
   version: 'v1',
+  outputSchema: WRITE_TOOL_RESULT_OUTPUT_SCHEMA,
+  artifactPolicy: 'never',
   schema: patchResourceSchema,
   scopeResolver: (params) => ({ type: 'namespaced', namespace: params.namespace }),
   handler: patchResourceHandler,
+  projectForModel: (result) => writeProjection('patch_resource', result),
 };
