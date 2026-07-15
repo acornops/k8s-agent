@@ -14,3 +14,9 @@ helm upgrade --install acornops-agent oci://ghcr.io/acornops/charts/acornops-age
 ```
 
 The raw deployment exposes the same leader-election environment variables and Lease RBAC for troubleshooting, but leaves `ACORNOPS_AGENT_LEADER_ELECTION_ENABLED=false` and `replicas: 1` by default. Multi-replica installs must be active-passive with leader election enabled.
+
+For a private platform CA, use the Helm chart's
+`config.tls.additionalCaBundle` setting. The deployment helper in the
+`acornops-deployment` repository provides the equivalent manual path through
+`ACORNOPS_AGENT_ADDITIONAL_CA_BUNDLE_FILE`; it creates a namespace-local
+ConfigMap and configures Node.js additive trust without disabling verification.
