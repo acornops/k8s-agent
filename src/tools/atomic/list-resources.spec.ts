@@ -63,6 +63,13 @@ describe('listResourcesTool', () => {
     }
   });
 
+  it('uses model-visible page limits for generic resources and namespaces', () => {
+    expect(listResourcesTool.schema.parse({ kind: 'Pod' }).limit).toBe(50);
+    expect(listResourcesTool.schema.parse({ kind: 'Namespace' }).limit).toBe(100);
+    expect(listResourcesTool.schema.parse({ kind: 'Pod', limit: 100 }).limit).toBe(50);
+    expect(listResourcesTool.schema.parse({ kind: 'Namespace', limit: 1000 }).limit).toBe(100);
+  });
+
   it('lists namespaced pods and returns summarized pod data', async () => {
     vi.mocked(k8sClient.core.listNamespacedPod).mockResolvedValue({
       metadata: { _continue: 'next-page' },
@@ -386,6 +393,46 @@ describe('listResourcesTool', () => {
         },
       ],
     });
+  });
+
+  it('keeps namespace continuation pages aligned with all model-visible names', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      metadata: { name: `team-${String(index).padStart(3, '0')}`, uid: `uid-${index}` },
+    }));
+    const secondPage = Array.from({ length: 5 }, (_, index) => ({
+      metadata: { name: `team-${String(index + 100).padStart(3, '0')}`, uid: `uid-${index + 100}` },
+    }));
+    vi.mocked(k8sClient.core.listNamespace)
+      .mockResolvedValueOnce({ metadata: { _continue: 'page-2' }, items: firstPage } as never)
+      .mockResolvedValueOnce({ metadata: {}, items: secondPage } as never);
+
+    const firstArgs = listResourcesTool.schema.parse({ kind: 'Namespace' });
+    const first = await listResourcesTool.handler(firstArgs);
+    const firstContext = listResourcesTool.projectForModel(first, firstArgs);
+    const secondArgs = listResourcesTool.schema.parse({
+      kind: 'Namespace',
+      continue_token: first.continue_token,
+    });
+    const second = await listResourcesTool.handler(secondArgs);
+    const secondContext = listResourcesTool.projectForModel(second, secondArgs);
+
+    expect(firstContext.data.items).toHaveLength(100);
+    expect(firstContext.omissions).toEqual([]);
+    expect(firstContext.data.continue_token).toBe('page-2');
+    expect(firstContext.summary).toContain('call list_resources again with continue_token');
+    expect(secondContext.data.items).toHaveLength(5);
+    expect(secondContext.summary).toContain('The listing is complete');
+    expect([
+      ...(firstContext.data.items as Array<{ name: string }>),
+      ...(secondContext.data.items as Array<{ name: string }>),
+    ].map((item) => item.name)).toEqual(
+      Array.from({ length: 105 }, (_, index) => `team-${String(index).padStart(3, '0')}`)
+    );
+    expect(k8sClient.core.listNamespace).toHaveBeenNthCalledWith(1, expect.objectContaining({ limit: 100 }));
+    expect(k8sClient.core.listNamespace).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      limit: 100,
+      _continue: 'page-2',
+    }));
   });
 
   it('lists nodes through the cluster-scoped node api', async () => {

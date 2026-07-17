@@ -18,12 +18,15 @@ const OUTPUT_SCHEMA = fullToolResultOutputSchema({
   additionalProperties: false,
 });
 
+const GENERIC_MODEL_PAGE_LIMIT = 50;
+const NAMESPACE_MODEL_PAGE_LIMIT = 100;
+
 const schema = z.object({
   kind: z.enum(['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'Job', 'Service', 'Ingress', 'PVC', 'HPA', 'Namespace', 'Node', 'Event']),
   namespace: namespaceSchema.optional(),
   label_selector: selectorSchema.optional(),
   field_selector: selectorSchema.optional(),
-  limit: z.number().int().min(1).max(1000).optional().default(100),
+  limit: z.number().int().min(1).max(1000).optional(),
   continue_token: continuationTokenSchema.optional()
 }).strict().superRefine((value, ctx) => {
   if (value.namespace === 'all') {
@@ -33,7 +36,13 @@ const schema = z.object({
       message: 'omit namespace to query all allowed namespaces; do not pass the literal value "all"'
     });
   }
-});
+}).transform((value) => ({
+  ...value,
+  limit: Math.min(
+    value.limit ?? (value.kind === 'Namespace' ? NAMESPACE_MODEL_PAGE_LIMIT : GENERIC_MODEL_PAGE_LIMIT),
+    value.kind === 'Namespace' ? NAMESPACE_MODEL_PAGE_LIMIT : GENERIC_MODEL_PAGE_LIMIT
+  )
+}));
 
 /** Convert a Kubernetes API object into a compact list item summary. */
 function summarizeResource(kind: string, item: any): Record<string, unknown> {
@@ -357,7 +366,7 @@ async function listAcrossAllowedNamespaces(
 
 export const listResourcesTool: ToolDefinition = {
   name: 'list_resources',
-  description: 'List Kubernetes resources by kind with optional namespace and selector filters. To query across all allowed namespaces, omit namespace entirely; never pass namespace="all" or namespace="*". Returned items include their actual namespace.',
+  description: 'List Kubernetes resources by kind with optional namespace and selector filters. To query across all allowed namespaces, omit namespace entirely; never pass namespace="all" or namespace="*". Use at most 50 items per page, or 100 for Namespace. When a complete listing is requested, follow continue_token until it is empty. Returned items include their actual namespace.',
   capability: 'read',
   timeoutMs: 12000,
   version: 'v1',
@@ -369,18 +378,27 @@ export const listResourcesTool: ToolDefinition = {
     : ({ type: 'namespace-collection', namespace: params.namespace }),
   handler,
   projectForModel: (result) => {
-    const bounded = boundedItems(Array.isArray(result?.items) ? result.items : [], 50);
+    const kind = result?.kind;
+    const items = Array.isArray(result?.items) ? result.items : [];
+    const hasMore = Boolean(result?.continue_token);
+    const projectedItems = kind === 'Namespace'
+      ? items.map((item: Record<string, unknown>) => ({ name: item.name }))
+      : items;
+    const bounded = boundedItems(
+      projectedItems,
+      kind === 'Namespace' ? NAMESPACE_MODEL_PAGE_LIMIT : GENERIC_MODEL_PAGE_LIMIT
+    );
     return {
       schemaVersion: 'acornops.model-context.v1',
       tool: 'list_resources',
       status: 'success',
-      summary: `Returned ${result?.total ?? bounded.items.length} ${result?.kind || 'resource'} item(s) from ${result?.namespace === '*' ? 'all allowed namespaces' : result?.namespace || 'the requested scope'}.`,
+      summary: `Returned ${result?.total ?? bounded.items.length} ${result?.kind || 'resource'} item(s) on this page from ${result?.namespace === '*' ? 'all allowed namespaces' : result?.namespace || 'the requested scope'}.${hasMore ? ' More results are available; call list_resources again with continue_token to complete the listing.' : ' The listing is complete.'}`,
       data: {
-        kind: result?.kind,
+        kind,
         namespace: result?.namespace,
         total: result?.total,
         returnedCount: result?.total,
-        hasMore: Boolean(result?.continue_token),
+        hasMore,
         continue_token: result?.continue_token,
         items: bounded.items,
       },

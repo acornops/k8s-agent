@@ -96,7 +96,9 @@ Current control-plane-expected builtin tool names:
 
 For `list_resources`, omitting `namespace` means all namespaces allowed by the
 effective AgentK scope. Callers must not pass synthetic namespace values such as
-`all` or `*`.
+`all` or `*`. Generic fetches are clamped to 50 items. Namespace pages may
+contain 100 compact name-only model items so the Kubernetes
+continuation token never advances beyond names omitted from model context.
 
 ### Agent -> control plane notifications
 
