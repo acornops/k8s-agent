@@ -18,6 +18,7 @@ import { checkMetricsApi } from '../k8s/metrics.js';
 import { mcpRouter } from '../mcp/router.js';
 import { SnapshotManager } from './snapshot-manager.js';
 import { registerAllTools } from '../tools/index.js';
+import { toolRegistry } from '../tools/registry.js';
 import { clearRemoteNamespaceScope, isNamespaceScoped, NamespaceScope, setNamespaceScope } from '../runtime/namespace-scope.js';
 import { WatchStore } from './watch/watch-store.js';
 import { WatchManager } from './watch/watch-manager.js';
@@ -158,6 +159,10 @@ export class LifecycleManager {
       version: config.AGENT_VERSION,
       agentVersion: config.AGENT_VERSION,
       supportedCapabilities: config.ACORNOPS_AGENT_WRITE_ENABLED ? ['read', 'write'] : ['read'],
+      advertisedTools: toolRegistry.getAll().map((tool) => ({
+        name: tool.name,
+        capability: tool.capability,
+      })),
       clusterFeatures: {
         metricsApiAvailable: this.metricsApiAvailable,
         rbacMode: isNamespaceScoped() ? 'namespace' : 'cluster-wide',

@@ -59,10 +59,15 @@ Handshake request:
   - `targetType`
   - `agentType`
   - `supportedCapabilities`
+  - `advertisedTools[].name`
+  - `advertisedTools[].capability`
   - `clusterFeatures.metricsApiAvailable`
   - `clusterFeatures.rbacMode`
 
 `agentType` is exactly `agentk`; the legacy `k8s_agent` value is not supported.
+`advertisedTools` is derived from the live AgentK tool registry. Each entry
+identifies the exact registered tool name and its read/write capability; it is
+not a fallback grant.
 
 Handshake success response must include:
 

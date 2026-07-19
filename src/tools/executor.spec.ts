@@ -71,6 +71,30 @@ describe('ToolExecutor', () => {
     })).rejects.toMatchObject({ toolCode: 'NAMESPACE_FORBIDDEN' });
   });
 
+  it('tells namespace-collection callers how to recover from a forbidden namespace guess', async () => {
+    setNamespaceScope({ include: ['team-a'], exclude: [] });
+    toolRegistry.register({
+      name: 'list_resources',
+      description: 'list',
+      capability: 'read',
+      timeoutMs: 1000,
+      version: 'v1',
+      schema: z.object({ namespace: z.string().optional() }).strict(),
+      scopeResolver: (args) => ({ type: 'namespace-collection', namespace: args.namespace }),
+      handler: vi.fn(),
+    });
+
+    await expect(toolExecutor.execute({
+      name: 'list_resources',
+      arguments: { namespace: 'default' },
+      requestId: 31,
+      policy: { allowedTools: new Set(['list_resources']), writeEnabled: false, generation: 1 },
+    })).rejects.toMatchObject({
+      toolCode: 'NAMESPACE_FORBIDDEN',
+      message: 'Namespace is outside the allowed scope: default. Omit namespace to query all allowed namespaces.',
+    });
+  });
+
   it('rejects Namespace reads when RBAC is namespace-scoped', async () => {
     config.ACORNOPS_AGENT_RBAC_SCOPE = 'namespace';
     toolRegistry.register({

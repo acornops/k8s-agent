@@ -70,6 +70,12 @@ describe('listResourcesTool', () => {
     expect(listResourcesTool.schema.parse({ kind: 'Namespace', limit: 1000 }).limit).toBe(100);
   });
 
+  it('discards irrelevant namespace guesses for cluster-scoped discovery kinds', () => {
+    expect(listResourcesTool.schema.parse({ kind: 'Namespace', namespace: 'default' }).namespace).toBeUndefined();
+    expect(listResourcesTool.schema.parse({ kind: 'Node', namespace: 'default' }).namespace).toBeUndefined();
+    expect(listResourcesTool.schema.parse({ kind: 'Pod', namespace: 'default' }).namespace).toBe('default');
+  });
+
   it('lists namespaced pods and returns summarized pod data', async () => {
     vi.mocked(k8sClient.core.listNamespacedPod).mockResolvedValue({
       metadata: { _continue: 'next-page' },

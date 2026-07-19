@@ -305,7 +305,10 @@ export class ToolExecutor {
       throw new ToolExecutionError('NAMESPACE_FORBIDDEN', `Namespace is outside the allowed scope: ${scope.namespace}`);
     }
     if (scope.type === 'namespace-collection' && scope.namespace && !isNamespaceAllowed(scope.namespace)) {
-      throw new ToolExecutionError('NAMESPACE_FORBIDDEN', `Namespace is outside the allowed scope: ${scope.namespace}`);
+      throw new ToolExecutionError(
+        'NAMESPACE_FORBIDDEN',
+        `Namespace is outside the allowed scope: ${scope.namespace}. Omit namespace to query all allowed namespaces.`
+      );
     }
     if (scope.type === 'cluster' && !canAccessClusterScopedKind(scope.kind)) {
       throw new ToolExecutionError('NAMESPACE_FORBIDDEN', `Cluster-scoped kind is unavailable in the current scope: ${scope.kind}`);

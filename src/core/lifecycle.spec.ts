@@ -7,6 +7,7 @@ const {
   snapshotManagerInstances,
   checkMetricsApi,
   registerAllTools,
+  getAllTools,
   handleRequest,
   setSessionPolicy,
   clearSessionPolicy,
@@ -34,6 +35,7 @@ const {
   const snapshotManagerInstances: Array<InstanceType<typeof MockSnapshotManager>> = [];
   const checkMetricsApi = vi.fn();
   const registerAllTools = vi.fn();
+  const getAllTools = vi.fn();
   const handleRequest = vi.fn();
   const setSessionPolicy = vi.fn();
   const clearSessionPolicy = vi.fn();
@@ -80,6 +82,7 @@ const {
     snapshotManagerInstances,
     checkMetricsApi,
     registerAllTools,
+    getAllTools,
     handleRequest,
     setSessionPolicy,
     clearSessionPolicy,
@@ -108,6 +111,7 @@ vi.mock('./watch/watch-manager.js', () => ({ WatchManager: MockWatchManager }));
 vi.mock('../k8s/metrics.js', () => ({ checkMetricsApi }));
 vi.mock('../mcp/router.js', () => ({ mcpRouter: { handleRequest, setSessionPolicy, clearSessionPolicy } }));
 vi.mock('../tools/index.js', () => ({ registerAllTools }));
+vi.mock('../tools/registry.js', () => ({ toolRegistry: { getAll: getAllTools } }));
 
 import { LifecycleManager } from './lifecycle.js';
 
@@ -119,6 +123,10 @@ describe('LifecycleManager', () => {
     snapshotManagerInstances.length = 0;
     watchManagerInstances.length = 0;
     checkMetricsApi.mockResolvedValue(true);
+    getAllTools.mockReturnValue([
+      { name: 'list_resources', capability: 'read' },
+      { name: 'patch_resource', capability: 'write' },
+    ]);
     handleRequest.mockResolvedValue({ jsonrpc: '2.0', id: 7, result: { ok: true } });
   });
 
@@ -159,6 +167,10 @@ describe('LifecycleManager', () => {
         version: '1.2.3',
         agentVersion: '1.2.3',
         supportedCapabilities: ['read', 'write'],
+        advertisedTools: expect.arrayContaining([
+          { name: 'list_resources', capability: 'read' },
+          { name: 'patch_resource', capability: 'write' },
+        ]),
         clusterFeatures: {
           metricsApiAvailable: false,
           rbacMode: 'namespace',

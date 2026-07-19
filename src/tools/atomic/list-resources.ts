@@ -38,6 +38,10 @@ const schema = z.object({
   }
 }).transform((value) => ({
   ...value,
+  // Namespace and Node use cluster-scoped Kubernetes APIs. A namespace filter
+  // is meaningless for those kinds, so discard model-supplied guesses before
+  // scope authorization and execution.
+  namespace: ['Namespace', 'Node'].includes(value.kind) ? undefined : value.namespace,
   limit: Math.min(
     value.limit ?? (value.kind === 'Namespace' ? NAMESPACE_MODEL_PAGE_LIMIT : GENERIC_MODEL_PAGE_LIMIT),
     value.kind === 'Namespace' ? NAMESPACE_MODEL_PAGE_LIMIT : GENERIC_MODEL_PAGE_LIMIT
